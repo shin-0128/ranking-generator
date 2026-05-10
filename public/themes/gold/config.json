@@ -1,0 +1,153 @@
+{
+  "id": "gold",
+  "name": "ゴールド",
+  "size": {
+    "width": 941,
+    "height": 1672
+  },
+  "rows": [
+    {
+      "rank": 1,
+      "iconCenter": [
+        334,
+        299
+      ],
+      "iconRadius": 64,
+      "nameArea": [
+        410,
+        264,
+        510,
+        70
+      ]
+    },
+    {
+      "rank": 2,
+      "iconCenter": [
+        336,
+        452
+      ],
+      "iconRadius": 68,
+      "nameArea": [
+        410,
+        417,
+        510,
+        70
+      ]
+    },
+    {
+      "rank": 3,
+      "iconCenter": [
+        334,
+        606
+      ],
+      "iconRadius": 63,
+      "nameArea": [
+        410,
+        571,
+        510,
+        70
+      ]
+    },
+    {
+      "rank": 4,
+      "iconCenter": [
+        330,
+        750
+      ],
+      "iconRadius": 63,
+      "nameArea": [
+        410,
+        715,
+        510,
+        70
+      ]
+    },
+    {
+      "rank": 5,
+      "iconCenter": [
+        336,
+        889
+      ],
+      "iconRadius": 63,
+      "nameArea": [
+        410,
+        854,
+        510,
+        70
+      ]
+    },
+    {
+      "rank": 6,
+      "iconCenter": [
+        334,
+        1029
+      ],
+      "iconRadius": 63,
+      "nameArea": [
+        410,
+        994,
+        510,
+        70
+      ]
+    },
+    {
+      "rank": 7,
+      "iconCenter": [
+        334,
+        1162
+      ],
+      "iconRadius": 62,
+      "nameArea": [
+        410,
+        1127,
+        510,
+        70
+      ]
+    },
+    {
+      "rank": 8,
+      "iconCenter": [
+        334,
+        1292
+      ],
+      "iconRadius": 61,
+      "nameArea": [
+        410,
+        1257,
+        510,
+        70
+      ]
+    },
+    {
+      "rank": 9,
+      "iconCenter": [
+        334,
+        1426
+      ],
+      "iconRadius": 63,
+      "nameArea": [
+        410,
+        1391,
+        510,
+        70
+      ]
+    },
+    {
+      "rank": 10,
+      "iconCenter": [
+        334,
+        1550
+      ],
+      "iconRadius": 61,
+      "nameArea": [
+        410,
+        1515,
+        510,
+        70
+      ]
+    }
+  ],
+  "fontFamily": "Noto Sans JP",
+  "fontColor": "#FFFFFF",
+  "fontSize": 40
+}

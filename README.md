@@ -1,36 +1,82 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# TikTok 貢献ランキング → 金枠ランキング画像
 
-## Getting Started
+TikTok の貢献ランキングのスクショから、金枠デザインのランキング画像 (PNG) を生成するブラウザ完結ツール。
 
-First, run the development server:
+## ローカル開発
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+http://localhost:3000
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 環境変数 (`.env.local`)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+APP_PASSWORD=任意のパスワード
+ANTHROPIC_API_KEY=sk-ant-...
+```
 
-## Learn More
+- `APP_PASSWORD` 未設定 → 認証無効（誰でもアクセス可、ローカル開発向け）
+- `ANTHROPIC_API_KEY` 未設定 → スクショ解析機能が 500 エラー（手動入力モードのみ動作）
 
-To learn more about Next.js, take a look at the following resources:
+API キーは https://console.anthropic.com/ で発行。
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Vercel デプロイ
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. このディレクトリを GitHub リポジトリへ push
+2. https://vercel.com/new で当該 repo を import
+3. **Settings → Environment Variables** で以下を追加：
+   - `APP_PASSWORD` (任意のパスワード)
+   - `ANTHROPIC_API_KEY` (https://console.anthropic.com/ で発行)
+4. Deploy
 
-## Deploy on Vercel
+デプロイ後 `/login` で初回ログイン → cookie 30 日保持。
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+スクショ解析は Claude Sonnet 4.6 vision API を使用（1 枚あたり ~$0.01〜0.02）。
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 機能
+
+- 複数スクショの D&D / クリック選択
+- Tesseract.js による日本語+英語 OCR（ブラウザ内、サーバ送信なし）
+- 順位連番でマージ、重複自動排除
+- 金枠テンプレに合成し PNG ダウンロード
+- 名前の絵文字・装飾記号を自動クリーニング、編集可能
+
+## テーマ追加
+
+`public/themes/<id>/` に `template.png` と `config.json` を配置：
+
+```jsonc
+{
+  "id": "<id>",
+  "name": "<表示名>",
+  "size": { "width": 941, "height": 1672 },
+  "rows": [
+    { "rank": 1, "iconCenter": [x, y], "iconRadius": r, "nameArea": [x, y, w, h] }
+    // ... 行数ぶん
+  ],
+  "fontFamily": "Noto Sans JP",
+  "fontColor": "#FFFFFF",
+  "fontSize": 50
+}
+```
+
+座標調整は UI の「座標オーバーレイ」チェックで赤丸（icon）と青枠（name）を重ねて確認。
+
+## ディレクトリ
+
+```
+app/
+  api/login/    認証 API
+  login/        ログインページ
+components/     React コンポーネント
+lib/
+  extractor/    OCR 抽象（Tesseract / Claude 用）
+  parser.ts     スクショ → エントリ抽出
+  cleaner.ts    名前クリーニング
+  composer.ts   金枠合成
+public/themes/  テーマアセット
+middleware.ts   認証ガード
+```
