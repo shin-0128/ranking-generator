@@ -1,20 +1,17 @@
 /**
- * TikTok-style avatar circle detection from a full-resolution screenshot.
+ * TikTok avatar detection — v10.
  *
- * Algorithm (v7 — validated against multiple TikTok screenshot variants):
- * 1. Background is white. Avatars = non-white pixels.
- * 2. Stage 1 — loose row bands: for each Y row in the avatar X stripe,
- *    count non-white pixels. Continuous Y rows above a low threshold = a row
- *    band (contains avatar + badge + name + coin text).
- * 3. Stage 2 — per row band, locate the avatar inside it:
- *    - cx = column with the most non-white pixels within the band's Y range
- *      (avatar's vertical center column has the maximum chord).
- *    - cy = Y row with the most non-white pixels within the band
- *      (avatar's horizontal center row has the maximum chord), refined by
- *      a gap-tolerant vertical extent scan at cx.
- *    - d  = the vertical extent at cx (the avatar's diameter).
- * 4. Apply canonical (median) cx and r across all bands (avatars are at the
- *    same X and same size across rows), per-row cy individually.
+ * Strategy:
+ * 1. Find row bands (rows with non-white content in left half of screenshot).
+ * 2. For each band, scan at the peak Y row for non-white "runs" (using a
+ *    tight gap tolerance so runs don't merge across element boundaries).
+ * 3. Filter runs by:
+ *    - width within plausible avatar size range
+ *    - cx within plausible X zone (excludes rank-number column on far left)
+ *    - aspect (vertical extent ≈ horizontal width — avatars are circular)
+ * 4. Pick the largest qualifying run per band → that's the avatar.
+ * 5. Use median cx and median diameter across all bands as the canonical
+ *    (since avatars are at the same X and same size across rows).
  */
 
 export interface DetectedCircle {
@@ -27,12 +24,17 @@ export interface DetectOptions {
   nonWhiteThreshold?: number;
   headerSkipFrac?: number;
   footerSkipFrac?: number;
-  avatarXMinFrac?: number;
-  avatarXMaxFrac?: number;
   rowMinNonwhitePixels?: number;
   mergeGapFrac?: number;
   rowMinHeightFrac?: number;
-  gapTolerance?: number;
+  runGapFrac?: number;
+  extentGapFrac?: number;
+  minAvatarWFrac?: number;
+  maxAvatarWFrac?: number;
+  avatarCxMinFrac?: number;
+  avatarCxMaxFrac?: number;
+  aspectMin?: number;
+  aspectMax?: number;
   radiusMargin?: number;
 }
 
@@ -40,12 +42,17 @@ const DEFAULTS: Required<DetectOptions> = {
   nonWhiteThreshold: 252,
   headerSkipFrac: 0.02,
   footerSkipFrac: 0.02,
-  avatarXMinFrac: 0.1,
-  avatarXMaxFrac: 0.4,
   rowMinNonwhitePixels: 4,
   mergeGapFrac: 0.01,
-  rowMinHeightFrac: 0.04,
-  gapTolerance: 12,
+  rowMinHeightFrac: 0.025,
+  runGapFrac: 0.005,
+  extentGapFrac: 0.012,
+  minAvatarWFrac: 0.08,
+  maxAvatarWFrac: 0.3,
+  avatarCxMinFrac: 0.06,
+  avatarCxMaxFrac: 0.45,
+  aspectMin: 0.6,
+  aspectMax: 1.5,
   radiusMargin: 2,
 };
 
@@ -71,11 +78,14 @@ export function detectAvatars(
 
   const yStart = Math.floor(H * o.headerSkipFrac);
   const yEnd = Math.floor(H * (1 - o.footerSkipFrac));
-  const xMin = Math.floor(W * o.avatarXMinFrac);
-  const xMax = Math.floor(W * o.avatarXMaxFrac);
   const mergeGap = Math.max(3, Math.floor(H * o.mergeGapFrac));
-  const minRowH = Math.max(20, Math.floor(H * o.rowMinHeightFrac));
-  const gapTol = o.gapTolerance;
+  const minRowH = Math.max(15, Math.floor(H * o.rowMinHeightFrac));
+  const runGap = Math.max(2, Math.floor(W * o.runGapFrac));
+  const extGap = Math.max(5, Math.floor(W * o.extentGapFrac));
+  const minAW = Math.floor(W * o.minAvatarWFrac);
+  const maxAW = Math.floor(W * o.maxAvatarWFrac);
+  const cxMin = Math.floor(W * o.avatarCxMinFrac);
+  const cxMax = Math.floor(W * o.avatarCxMaxFrac);
 
   const isNonWhite = (x: number, y: number): boolean => {
     if (x < 0 || x >= W || y < 0 || y >= H) return false;
@@ -85,11 +95,12 @@ export function detectAvatars(
     );
   };
 
-  // Stage 1: row bands
+  // Row bands using density in left half of image
+  const rowXMax = Math.floor(W / 2);
   const rowCounts: number[] = new Array(H).fill(0);
   for (let y = yStart; y < yEnd; y++) {
     let c = 0;
-    for (let x = xMin; x < xMax; x++) {
+    for (let x = 0; x < rowXMax; x++) {
       if (isNonWhite(x, y)) c++;
     }
     rowCounts[y] = c;
@@ -123,79 +134,103 @@ export function detectAvatars(
   const rowBands = merged.filter((b) => b[1] - b[0] >= minRowH);
   if (rowBands.length === 0) return [];
 
-  // Stage 2: locate avatar within each row band
-  const cxs: number[] = [];
-  const ds: number[] = [];
-  const cyList: number[] = [];
-
-  for (const [y0, y1] of rowBands) {
-    // cx = column with most non-white in band Y range
-    let peakX = xMin;
-    let peakXVal = -1;
-    for (let x = xMin; x < xMax; x++) {
-      let cnt = 0;
-      for (let y = y0; y <= y1; y++) {
-        if (isNonWhite(x, y)) cnt++;
-      }
-      if (cnt > peakXVal) {
-        peakXVal = cnt;
-        peakX = x;
-      }
-    }
-    const cx = peakX;
-
-    // cy = row with most non-white in band X range
-    let peakY = y0;
-    let peakYVal = rowCounts[y0];
-    for (let y = y0; y <= y1; y++) {
-      if (rowCounts[y] > peakYVal) {
-        peakYVal = rowCounts[y];
-        peakY = y;
-      }
-    }
-
-    // vertical extent at cx with gap tolerance — gives avatar diameter
-    let yt = peakY;
+  const findRunsAt = (y: number, gap: number): Array<[number, number]> => {
+    const runs: Array<[number, number]> = [];
+    let inRun = false;
+    let s = 0;
+    let lastNw = 0;
     let ws = 0;
-    for (let y = peakY - 1; y >= yStart; y--) {
-      if (isNonWhite(cx, y)) {
+    for (let x = 0; x < W; x++) {
+      if (isNonWhite(x, y)) {
+        if (!inRun) {
+          inRun = true;
+          s = x;
+        }
+        ws = 0;
+        lastNw = x;
+      } else if (inRun) {
+        ws++;
+        if (ws > gap) {
+          runs.push([s, lastNw]);
+          inRun = false;
+        }
+      }
+    }
+    if (inRun) runs.push([s, lastNw]);
+    return runs;
+  };
+
+  const vertExtent = (
+    x: number,
+    nearY: number,
+    gap: number,
+  ): [number, number] => {
+    let yt = nearY;
+    let ws = 0;
+    for (let y = nearY - 1; y >= yStart; y--) {
+      if (isNonWhite(x, y)) {
         yt = y;
         ws = 0;
       } else {
         ws++;
-        if (ws > gapTol) break;
+        if (ws > gap) break;
       }
     }
-    let yb = peakY;
+    let yb = nearY;
     ws = 0;
-    for (let y = peakY + 1; y < yEnd; y++) {
-      if (isNonWhite(cx, y)) {
+    for (let y = nearY + 1; y < yEnd; y++) {
+      if (isNonWhite(x, y)) {
         yb = y;
         ws = 0;
       } else {
         ws++;
-        if (ws > gapTol) break;
+        if (ws > gap) break;
       }
     }
-    const d = yb - yt;
-    const cy = Math.floor((yt + yb) / 2);
+    return [yt, yb];
+  };
 
-    cxs.push(cx);
-    ds.push(d);
-    cyList.push(cy);
+  const detected: Array<{ cx: number; cy: number; d: number }> = [];
+  for (const [y0, y1] of rowBands) {
+    let peakY = y0;
+    let pv = rowCounts[y0];
+    for (let y = y0; y <= y1; y++) {
+      if (rowCounts[y] > pv) {
+        pv = rowCounts[y];
+        peakY = y;
+      }
+    }
+
+    const runs = findRunsAt(peakY, runGap);
+    let best: { cx: number; cy: number; d: number } | null = null;
+    for (const [s, e] of runs) {
+      const w = e - s + 1;
+      const cx = Math.floor((s + e) / 2);
+      if (w < minAW || w > maxAW) continue;
+      if (cx < cxMin || cx > cxMax) continue;
+      const [yt, yb] = vertExtent(cx, peakY, extGap);
+      const h = yb - yt;
+      if (w === 0) continue;
+      const aspect = h / w;
+      if (aspect < o.aspectMin || aspect > o.aspectMax) continue;
+      const d = Math.max(w, h);
+      if (!best || d > best.d) {
+        best = { cx, cy: Math.floor((yt + yb) / 2), d };
+      }
+    }
+    if (best) detected.push(best);
   }
+  if (detected.length === 0) return [];
 
-  const canonicalCx = median(cxs);
-  const canonicalR = Math.floor(median(ds) / 2) + o.radiusMargin;
+  const canonicalCx = median(detected.map((a) => a.cx));
+  const canonicalR =
+    Math.floor(median(detected.map((a) => a.d)) / 2) + o.radiusMargin;
 
-  return cyList
-    .map((cy) => ({ cx: canonicalCx, cy, r: canonicalR }))
+  return detected
+    .map((a) => ({ cx: canonicalCx, cy: a.cy, r: canonicalR }))
     .sort((a, b) => a.cy - b.cy);
 }
 
-/**
- * Match Claude's rank/name entries to detected avatar circles by Y proximity.
- */
 export function matchByY<T extends { cy: number }>(
   entryHints: T[],
   detected: DetectedCircle[],
