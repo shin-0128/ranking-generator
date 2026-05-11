@@ -174,14 +174,33 @@ export async function parseScreenshot(file: File): Promise<ExtractedEntry[]> {
     ? detectAvatars(fullCanvas)
     : [];
 
-  // Match Claude's entries to detected circles by Y proximity
-  const tolerancePx = Math.round(FH * 0.05);
+  // Sort Claude entries by hint Y to match Gemini's top-to-bottom order
+  const sortedEntries = data.entries
+    .map((e, originalIdx) => ({ e, originalIdx, cy: e.iconCircle.cy * scaleY }))
+    .sort((a, b) => a.cy - b.cy);
   const candidates = geminiCircles.length > 0 ? geminiCircles : heuristicDetected;
-  const hints = data.entries.map((e) => ({ cy: e.iconCircle.cy * scaleY }));
-  const matches = matchByY(hints, candidates, tolerancePx);
+
+  // Build matches array indexed by original entry order
+  const matches: Array<IconCircle | null> = new Array(data.entries.length).fill(
+    null,
+  );
+  if (candidates.length === sortedEntries.length) {
+    // Perfect match: zip in order (most reliable when counts agree)
+    sortedEntries.forEach((s, i) => {
+      matches[s.originalIdx] = candidates[i];
+    });
+  } else {
+    // Fallback: nearest-Y matching
+    const tolerancePx = Math.round(FH * 0.06);
+    const hints = sortedEntries.map((s) => ({ cy: s.cy }));
+    const nearMatches = matchByY(hints, candidates, tolerancePx);
+    sortedEntries.forEach((s, i) => {
+      matches[s.originalIdx] = nearMatches[i];
+    });
+  }
   const matchedCount = matches.filter((m) => m).length;
   console.log(
-    `[parser] gemini=${geminiCircles.length} heuristic=${heuristicDetected.length} matched=${matchedCount}/${data.entries.length} (tol=${tolerancePx}px)`,
+    `[parser] gemini=${geminiCircles.length} heuristic=${heuristicDetected.length} entries=${data.entries.length} matched=${matchedCount} (mode=${candidates.length === sortedEntries.length ? "zip" : "nearest"})`,
   );
 
   return data.entries.map((entry, i) => {

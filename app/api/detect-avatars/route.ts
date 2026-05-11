@@ -96,6 +96,10 @@ export async function POST(req: Request) {
     const parsed = JSON.parse(text) as {
       avatars: Array<{ ymin: number; xmin: number; ymax: number; xmax: number }>;
     };
+    console.log(
+      `[detect-avatars] gemini returned ${parsed.avatars.length} boxes:`,
+      JSON.stringify(parsed.avatars),
+    );
     return NextResponse.json(parsed);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown error";
