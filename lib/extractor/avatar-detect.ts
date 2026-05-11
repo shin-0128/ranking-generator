@@ -1,17 +1,13 @@
 /**
- * TikTok avatar detection — v10.
+ * TikTok avatar detection — v11 (vertical-extent profile).
  *
- * Strategy:
- * 1. Find row bands (rows with non-white content in left half of screenshot).
- * 2. For each band, scan at the peak Y row for non-white "runs" (using a
- *    tight gap tolerance so runs don't merge across element boundaries).
- * 3. Filter runs by:
- *    - width within plausible avatar size range
- *    - cx within plausible X zone (excludes rank-number column on far left)
- *    - aspect (vertical extent ≈ horizontal width — avatars are circular)
- * 4. Pick the largest qualifying run per band → that's the avatar.
- * 5. Use median cx and median diameter across all bands as the canonical
- *    (since avatars are at the same X and same size across rows).
+ * Key insight: avatars are CIRCULAR (h ≈ w). Text is short (h << w).
+ * For each row band, scan vertical extent h(x) at each X column. The avatar's
+ * X range = where h(x) is consistently HIGH (above 50% of max). Other UI
+ * elements (badges, names, coin amounts) have low h(x).
+ *
+ * This handles all variants: white-background avatars, internal text overlays,
+ * screenshots with or without header chrome.
  */
 
 export interface DetectedCircle {
@@ -27,14 +23,13 @@ export interface DetectOptions {
   rowMinNonwhitePixels?: number;
   mergeGapFrac?: number;
   rowMinHeightFrac?: number;
-  runGapFrac?: number;
   extentGapFrac?: number;
   minAvatarWFrac?: number;
   maxAvatarWFrac?: number;
-  avatarCxMinFrac?: number;
-  avatarCxMaxFrac?: number;
-  aspectMin?: number;
-  aspectMax?: number;
+  searchXMaxFrac?: number;
+  heightFracThreshold?: number;
+  smallImageThreshold?: number;
+  smallImageHeaderSkipFrac?: number;
   radiusMargin?: number;
 }
 
@@ -45,14 +40,13 @@ const DEFAULTS: Required<DetectOptions> = {
   rowMinNonwhitePixels: 4,
   mergeGapFrac: 0.01,
   rowMinHeightFrac: 0.025,
-  runGapFrac: 0.005,
   extentGapFrac: 0.012,
-  minAvatarWFrac: 0.08,
+  minAvatarWFrac: 0.06,
   maxAvatarWFrac: 0.3,
-  avatarCxMinFrac: 0.06,
-  avatarCxMaxFrac: 0.45,
-  aspectMin: 0.6,
-  aspectMax: 1.5,
+  searchXMaxFrac: 0.5,
+  heightFracThreshold: 0.5,
+  smallImageThreshold: 600,
+  smallImageHeaderSkipFrac: 0.18,
   radiusMargin: 2,
 };
 
@@ -76,16 +70,16 @@ export function detectAvatars(
   const data = imageData.data;
   const threshold = o.nonWhiteThreshold;
 
-  const yStart = Math.floor(H * o.headerSkipFrac);
+  const headerFrac =
+    W < o.smallImageThreshold ? o.smallImageHeaderSkipFrac : o.headerSkipFrac;
+  const yStart = Math.floor(H * headerFrac);
   const yEnd = Math.floor(H * (1 - o.footerSkipFrac));
   const mergeGap = Math.max(3, Math.floor(H * o.mergeGapFrac));
   const minRowH = Math.max(15, Math.floor(H * o.rowMinHeightFrac));
-  const runGap = Math.max(2, Math.floor(W * o.runGapFrac));
   const extGap = Math.max(5, Math.floor(W * o.extentGapFrac));
   const minAW = Math.floor(W * o.minAvatarWFrac);
   const maxAW = Math.floor(W * o.maxAvatarWFrac);
-  const cxMin = Math.floor(W * o.avatarCxMinFrac);
-  const cxMax = Math.floor(W * o.avatarCxMaxFrac);
+  const searchXMax = Math.floor(W * o.searchXMaxFrac);
 
   const isNonWhite = (x: number, y: number): boolean => {
     if (x < 0 || x >= W || y < 0 || y >= H) return false;
@@ -95,7 +89,7 @@ export function detectAvatars(
     );
   };
 
-  // Row bands using density in left half of image
+  // Row bands using density in left half
   const rowXMax = Math.floor(W / 2);
   const rowCounts: number[] = new Array(H).fill(0);
   for (let y = yStart; y < yEnd; y++) {
@@ -133,32 +127,6 @@ export function detectAvatars(
   }
   const rowBands = merged.filter((b) => b[1] - b[0] >= minRowH);
   if (rowBands.length === 0) return [];
-
-  const findRunsAt = (y: number, gap: number): Array<[number, number]> => {
-    const runs: Array<[number, number]> = [];
-    let inRun = false;
-    let s = 0;
-    let lastNw = 0;
-    let ws = 0;
-    for (let x = 0; x < W; x++) {
-      if (isNonWhite(x, y)) {
-        if (!inRun) {
-          inRun = true;
-          s = x;
-        }
-        ws = 0;
-        lastNw = x;
-      } else if (inRun) {
-        ws++;
-        if (ws > gap) {
-          runs.push([s, lastNw]);
-          inRun = false;
-        }
-      }
-    }
-    if (inRun) runs.push([s, lastNw]);
-    return runs;
-  };
 
   const vertExtent = (
     x: number,
@@ -201,24 +169,53 @@ export function detectAvatars(
       }
     }
 
-    const runs = findRunsAt(peakY, runGap);
-    let best: { cx: number; cy: number; d: number } | null = null;
-    for (const [s, e] of runs) {
-      const w = e - s + 1;
-      const cx = Math.floor((s + e) / 2);
-      if (w < minAW || w > maxAW) continue;
-      if (cx < cxMin || cx > cxMax) continue;
-      const [yt, yb] = vertExtent(cx, peakY, extGap);
-      const h = yb - yt;
-      if (w === 0) continue;
-      const aspect = h / w;
-      if (aspect < o.aspectMin || aspect > o.aspectMax) continue;
-      const d = Math.max(w, h);
-      if (!best || d > best.d) {
-        best = { cx, cy: Math.floor((yt + yb) / 2), d };
+    // h(x) profile across search range
+    const hAt: number[] = new Array(searchXMax).fill(0);
+    let maxH = 0;
+    for (let x = 0; x < searchXMax; x++) {
+      if (!isNonWhite(x, peakY)) continue;
+      const [yt, yb] = vertExtent(x, peakY, extGap);
+      hAt[x] = yb - yt;
+      if (hAt[x] > maxH) maxH = hAt[x];
+    }
+    if (maxH < minRowH) continue;
+
+    const hThreshold = Math.max(20, Math.floor(maxH * o.heightFracThreshold));
+
+    // Longest contiguous X run with h(x) >= threshold
+    let bestStart = -1;
+    let bestEnd = -1;
+    let curStart = -1;
+    let curEnd = -1;
+    for (let x = 0; x < searchXMax; x++) {
+      if (hAt[x] >= hThreshold) {
+        if (curStart === -1) curStart = x;
+        curEnd = x;
+      } else {
+        if (curStart !== -1) {
+          if (curEnd - curStart > bestEnd - bestStart) {
+            bestStart = curStart;
+            bestEnd = curEnd;
+          }
+          curStart = -1;
+        }
       }
     }
-    if (best) detected.push(best);
+    if (curStart !== -1 && curEnd - curStart > bestEnd - bestStart) {
+      bestStart = curStart;
+      bestEnd = curEnd;
+    }
+    if (bestStart === -1) continue;
+
+    const w = bestEnd - bestStart + 1;
+    const cx = Math.floor((bestStart + bestEnd) / 2);
+    if (w < minAW || w > maxAW) continue;
+
+    const [yt, yb] = vertExtent(cx, peakY, extGap);
+    const cy = Math.floor((yt + yb) / 2);
+    const h = yb - yt;
+    const d = Math.max(w, h);
+    detected.push({ cx, cy, d });
   }
   if (detected.length === 0) return [];
 
