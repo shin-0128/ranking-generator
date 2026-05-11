@@ -126,10 +126,21 @@ export function ScreenshotIconPicker({
 
   const handleEnd = (e: React.MouseEvent | React.TouchEvent) => {
     if (!drag) return;
+    const isTouch = "touches" in e;
     const dx = drag.current.x - drag.start.x;
     const dy = drag.current.y - drag.start.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    const useDrag = dist >= MIN_DRAG;
+
+    // On touch devices, large movement means the user was scrolling — not picking.
+    // Only fire a pick if movement is small (tap).
+    const SCROLL_THRESHOLD_SRC = 40;
+    if (isTouch && dist > SCROLL_THRESHOLD_SRC) {
+      setDrag(null);
+      return;
+    }
+
+    // Drag-to-define-radius is mouse-only (touch can't disambiguate from scroll)
+    const useDrag = !isTouch && dist >= MIN_DRAG;
 
     // If this was a tap (not drag) on a non-active marker, switch instead of crop
     if (!useDrag && onMarkerTap && markers) {
@@ -173,7 +184,6 @@ export function ScreenshotIconPicker({
     const data = cropAt(pickX, pickY, pickR);
     setDrag(null);
     if (data) onPick(data, { x: pickX, y: pickY }, pickR);
-    if ("touches" in e) e.preventDefault();
   };
 
   const renderScale =
@@ -190,7 +200,8 @@ export function ScreenshotIconPicker({
     <div className="space-y-2">
       {hint && <p className="text-sm text-amber-400 font-medium">{hint}</p>}
       <p className="text-xs text-zinc-500">
-        ヒント: アイコンをクリックで固定半径クロップ、ドラッグでアイコン外周まで広げてサイズも一緒に決定。
+        スマホ: アイコンをタップで固定半径クロップ。スクロールはスクショ上でも縦スワイプOK。
+        PC: クリックでクロップ、ドラッグでサイズも同時指定。
       </p>
       <div className="relative w-full select-none">
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -206,16 +217,10 @@ export function ScreenshotIconPicker({
             setHover(null);
             setDrag(null);
           }}
-          onTouchStart={(e) => {
-            e.preventDefault();
-            handleStart(e);
-          }}
-          onTouchMove={(e) => {
-            e.preventDefault();
-            handleMove(e);
-          }}
+          onTouchStart={handleStart}
+          onTouchMove={handleMove}
           onTouchEnd={handleEnd}
-          className="block w-full h-auto rounded border border-zinc-700 cursor-crosshair touch-none"
+          className="block w-full h-auto rounded border border-zinc-700 cursor-crosshair"
         />
         {/* Existing pick markers (each at its own radius) */}
         {markers?.map((m, i) => {
