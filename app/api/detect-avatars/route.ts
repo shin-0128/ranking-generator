@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+import { GoogleGenerativeAI, SchemaType, type Schema } from "@google/generative-ai";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -18,7 +18,7 @@ Order: top-to-bottom (the avatar at the highest position first).
 
 If the image is not a TikTok ranking screen or no avatars are visible, return an empty list.`;
 
-const SCHEMA = {
+const SCHEMA: Schema = {
   type: SchemaType.OBJECT,
   properties: {
     avatars: {
@@ -76,7 +76,7 @@ export async function POST(req: Request) {
   try {
     const client = new GoogleGenerativeAI(apiKey);
     const model = client.getGenerativeModel({
-      model: "gemini-2.0-flash",
+      model: "gemini-2.5-flash",
       systemInstruction: SYSTEM_PROMPT,
       generationConfig: {
         responseMimeType: "application/json",
@@ -98,9 +98,9 @@ export async function POST(req: Request) {
     };
     return NextResponse.json(parsed);
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "unknown error" },
-      { status: 500 },
-    );
+    const msg = e instanceof Error ? e.message : "unknown error";
+    const stack = e instanceof Error ? e.stack : undefined;
+    console.error("[detect-avatars] error:", msg, stack);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
