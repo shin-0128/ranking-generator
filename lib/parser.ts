@@ -16,6 +16,31 @@ interface ParseResponse {
   }>;
 }
 
+interface GeminiBox {
+  ymin: number;
+  xmin: number;
+  ymax: number;
+  xmax: number;
+}
+
+interface GeminiResponse {
+  avatars: GeminiBox[];
+}
+
+function boxToCircle(box: GeminiBox, W: number, H: number): IconCircle {
+  // box coords are in [0, 1000] normalized space
+  const xmin = (box.xmin / 1000) * W;
+  const xmax = (box.xmax / 1000) * W;
+  const ymin = (box.ymin / 1000) * H;
+  const ymax = (box.ymax / 1000) * H;
+  const cx = (xmin + xmax) / 2;
+  const cy = (ymin + ymax) / 2;
+  const w = xmax - xmin;
+  const h = ymax - ymin;
+  const r = Math.max(w, h) / 2;
+  return { cx, cy, r };
+}
+
 const MAX_DIM = 1568;
 
 function loadImageFromFile(file: File): Promise<HTMLImageElement> {
@@ -92,45 +117,71 @@ function cropCircleToSquareCanvas(
   return c;
 }
 
-export async function parseScreenshot(file: File): Promise<ExtractedEntry[]> {
-  const { fullCanvas, smallCanvas, smallBlob } = await preprocessToCanvas(file);
-
-  const formData = new FormData();
-  formData.append(
-    "file",
-    new File([smallBlob], "screenshot.png", { type: "image/png" }),
-  );
-  formData.append("width", String(smallCanvas.width));
-  formData.append("height", String(smallCanvas.height));
-
-  const res = await fetch("/api/parse-screenshot", {
-    method: "POST",
-    body: formData,
-  });
+async function callParse(blob: Blob, w: number, h: number): Promise<ParseResponse> {
+  const fd = new FormData();
+  fd.append("file", new File([blob], "screenshot.png", { type: "image/png" }));
+  fd.append("width", String(w));
+  fd.append("height", String(h));
+  const res = await fetch("/api/parse-screenshot", { method: "POST", body: fd });
   if (!res.ok) {
     let message = `parse failed: ${res.status}`;
     try {
       const err = (await res.json()) as { error?: string };
       if (err.error) message = err.error;
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
     throw new Error(message);
   }
-  const data = (await res.json()) as ParseResponse;
+  return (await res.json()) as ParseResponse;
+}
+
+async function callDetect(blob: Blob): Promise<GeminiResponse | null> {
+  try {
+    const fd = new FormData();
+    fd.append("file", new File([blob], "screenshot.png", { type: "image/png" }));
+    const res = await fetch("/api/detect-avatars", { method: "POST", body: fd });
+    if (!res.ok) {
+      console.warn(`[parser] gemini detect failed: ${res.status}`);
+      return null;
+    }
+    return (await res.json()) as GeminiResponse;
+  } catch (e) {
+    console.warn("[parser] gemini detect error", e);
+    return null;
+  }
+}
+
+export async function parseScreenshot(file: File): Promise<ExtractedEntry[]> {
+  const { fullCanvas, smallCanvas, smallBlob } = await preprocessToCanvas(file);
   const screenshotUrl = fullCanvas.toDataURL("image/png");
   const scaleX = fullCanvas.width / smallCanvas.width;
   const scaleY = fullCanvas.height / smallCanvas.height;
+  const FW = fullCanvas.width;
+  const FH = fullCanvas.height;
 
-  const detected = detectAvatars(fullCanvas);
-  const tolerancePx = Math.round(fullCanvas.height * 0.03);
-  const hints = data.entries.map((e) => ({
-    cy: e.iconCircle.cy * scaleY,
-  }));
-  const matches = matchByY(hints, detected, tolerancePx);
+  // Run Claude (rank+name) and Gemini (avatar bounding boxes) in parallel
+  const [data, gemini] = await Promise.all([
+    callParse(smallBlob, smallCanvas.width, smallCanvas.height),
+    callDetect(smallBlob),
+  ]);
+
+  // Convert Gemini boxes to full-resolution circles, sorted by Y
+  const geminiCircles: IconCircle[] = (gemini?.avatars ?? [])
+    .map((b) => boxToCircle(b, FW, FH))
+    .sort((a, b) => a.cy - b.cy);
+
+  // Fallback heuristic detection
+  const heuristicDetected = geminiCircles.length === 0
+    ? detectAvatars(fullCanvas)
+    : [];
+
+  // Match Claude's entries to detected circles by Y proximity
+  const tolerancePx = Math.round(FH * 0.05);
+  const candidates = geminiCircles.length > 0 ? geminiCircles : heuristicDetected;
+  const hints = data.entries.map((e) => ({ cy: e.iconCircle.cy * scaleY }));
+  const matches = matchByY(hints, candidates, tolerancePx);
   const matchedCount = matches.filter((m) => m).length;
   console.log(
-    `[parser] detected ${detected.length} avatars, matched ${matchedCount}/${data.entries.length} entries (tolerance ${tolerancePx}px)`,
+    `[parser] gemini=${geminiCircles.length} heuristic=${heuristicDetected.length} matched=${matchedCount}/${data.entries.length} (tol=${tolerancePx}px)`,
   );
 
   return data.entries.map((entry, i) => {
@@ -151,10 +202,10 @@ export async function parseScreenshot(file: File): Promise<ExtractedEntry[]> {
       cleanedName: cleanName(entry.name),
       source: {
         screenshotUrl,
-        width: fullCanvas.width,
-        height: fullCanvas.height,
+        width: FW,
+        height: FH,
         iconHint: claudeFull,
-        detected,
+        detected: candidates,
       },
       pickPos: { x: finalCircle.cx, y: finalCircle.cy },
       pickRadius: Math.round(finalCircle.r),
