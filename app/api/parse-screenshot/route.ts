@@ -1,74 +1,82 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI, SchemaType, type Schema } from "@google/generative-ai";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const client = new Anthropic();
+/**
+ * Single-pass grounded extraction.
+ *
+ * One Gemini 2.5 Flash call returns, per visible user row, the rank + name +
+ * a coarse avatar bounding box — all bound together in one object so the
+ * label can never be zipped onto the wrong avatar (the failure mode of the
+ * old two-model Claude+Gemini + nearest-Y pipeline).
+ *
+ * Coordinates are NORMALIZED [0,1000] (Gemini's native grounding space), so
+ * the response is resolution-independent. The client maps boxes back to the
+ * full-resolution canvas and refines them with local CV before cropping —
+ * VLM boxes are coarse on small circular avatars and must not be trusted as
+ * pixel-tight (see GroundingME / ScreenSpot-Pro: small-object grounding is
+ * the systemic weak point of every current VLM).
+ */
+const SYSTEM_PROMPT = `You read TikTok contribution-ranking screenshots and return one record per visible user row, top-to-bottom.
 
-const SYSTEM_PROMPT = `You analyze TikTok contribution-ranking screenshots and extract one record per visible user row.
+For EACH user row in the ranking list return:
+- rank: the integer position number at the far left of the row (e.g. 1, 2, 13, 14).
+- name: the user's display name. KEEP decorative emoji and symbols as-is (the caller cleans them). EXCLUDE: the badge text "奇想天外", roman-numeral tier markers (Ⅰ–Ⅻ / I–XII), the coin amount line (e.g. "コイン949.4 K枚"), and any UI labels.
+- box: a TIGHT bounding box around the user's circular profile avatar — the round photo (face / character / object) that sits between the rank number (left) and the name/badge (right). Return NORMALIZED integers in [0,1000] where 0 = top/left edge and 1000 = bottom/right edge of the image:
+    ymin, xmin = top-left corner
+    ymax, xmax = bottom-right corner
 
-The image you receive is exactly the size you see. All pixel coordinates you return MUST be in this image's pixel coordinate system, where (0, 0) is the top-left corner.
+Rules for box:
+1. Enclose ONLY the circular profile photo. Do NOT include the rank number, the "奇想天外" badge, tier markers, the name, or coin text.
+2. The avatar is roughly square (width ≈ height) and visually the same size across all rows of one screenshot. If your box sizes vary wildly between rows, you are targeting the wrong things — re-check.
+3. If a "VIP" / "VVIP" / level badge or pill overlaps or hangs off the BOTTOM edge of the avatar, do NOT extend the box to include it. The box bottom is the circular photo's own bottom edge.
+4. Err slightly LARGE (a few pixels of surrounding background) rather than too small (cutting the photo).
 
-For each user row return:
-- rank: integer at the far left of the row (the position number, e.g. 13, 14, 15)
-- name: the user's display name. EXCLUDE the badge text "奇想天外", roman-numeral tier markers (Ⅰ–Ⅻ / I–XII), the coin amount line (e.g. "コイン949.4 K枚"), and any UI labels. KEEP decorative emoji and symbols in the name as-is (the caller will clean them).
-- iconCircle: integer pixel coordinates of the user's circular profile photo. Return three values:
-    cx = horizontal pixel center of the visible profile photo
-    cy = vertical pixel center of the visible profile photo
-    r  = radius of the photo in pixels (half its visible diameter)
+IGNORE entirely: the status bar (time/battery), the page header/title bar and any avatars inside it, filter dropdowns/tabs, and the bottom navigation bar. Only rows in the ranked list count.
 
-CRITICAL rules for iconCircle:
-1. The profile photo is the round avatar IMAGE itself (a face / character / object photo inside a circular frame). It is NOT the rank number, NOT the "奇想天外" badge, NOT any tab label, NOT any header text.
-2. In each row, the avatar sits between the rank number (left) and the user name / badge (right). Visually it is the largest CIRCULAR PHOTO in that row.
-3. The avatar is roughly square in proportions and visually consistent in size across all rows in one screenshot. If your detected r varies wildly between rows, you are likely targeting different things — re-check.
-4. cx must point to the geometric center of the photo. NOT slightly above. NOT slightly to the side. Look at the actual photo edge, find the leftmost-rightmost extents, average them.
-5. r must describe the photo itself: the square (cx-r, cy-r) to (cx+r, cy+r) must tightly contain the photo with minimal surrounding background. Err on the side of slightly TOO BIG (capturing a few pixels of background) rather than too small (cutting off the photo).
-6. Avatar y position: avatars are centered vertically in their row. Avatars in the same screenshot share the same row height. If you have rank N at row Y, ranks N+1, N+2, etc. are at evenly-spaced Y positions below.
+Return EVERY visible ranked row in order, even if a row is partially clipped at the top or bottom — as long as its rank number and avatar are visible. Do NOT omit rows. If the image is not a TikTok ranking screen, return an empty list.`;
 
-IGNORE entirely:
-- The status bar (time, battery, signal at top)
-- The page header / title bar (e.g. "ライブランキング", profile thumbnails at top of header, tabs like "ギフト数最多 / 視聴時間最長", filter dropdowns like "合計 / 28日")
-- Any user thumbnails that appear in the HEADER (not in the row list)
-- Bottom navigation bar / tab bar
-
-If a user row is partially clipped at the top or bottom of the screenshot, still include it as long as the rank number and name are visible.
-
-If you cannot confidently locate the avatar for a row, OMIT that entry entirely rather than guessing — a wrong icon coordinate is worse than no entry.`;
-
-const SCHEMA = {
-  type: "object",
+const SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
   properties: {
     entries: {
-      type: "array",
+      type: SchemaType.ARRAY,
+      description: "Every ranked user row, ordered top-to-bottom",
       items: {
-        type: "object",
+        type: SchemaType.OBJECT,
         properties: {
-          rank: { type: "integer" },
-          name: { type: "string" },
-          iconCircle: {
-            type: "object",
-            properties: {
-              cx: { type: "integer" },
-              cy: { type: "integer" },
-              r: { type: "integer" },
-            },
-            required: ["cx", "cy", "r"],
-            additionalProperties: false,
-          },
+          rank: { type: SchemaType.INTEGER, description: "position number" },
+          name: { type: SchemaType.STRING, description: "display name, emoji kept" },
+          ymin: { type: SchemaType.INTEGER, description: "avatar top edge (0-1000)" },
+          xmin: { type: SchemaType.INTEGER, description: "avatar left edge (0-1000)" },
+          ymax: { type: SchemaType.INTEGER, description: "avatar bottom edge (0-1000)" },
+          xmax: { type: SchemaType.INTEGER, description: "avatar right edge (0-1000)" },
         },
-        required: ["rank", "name", "iconCircle"],
-        additionalProperties: false,
+        required: ["rank", "name", "ymin", "xmin", "ymax", "xmax"],
       },
     },
   },
   required: ["entries"],
-  additionalProperties: false,
 };
 
-type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+/** Transient server-side failures worth retrying (overload, rate limit, 5xx). */
+function isTransient(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    /\b(429|500|502|503|504)\b/.test(msg) ||
+    /high demand|overloaded|unavailable|try again|fetch failed|ECONNRESET|ETIMEDOUT/i.test(
+      msg,
+    )
+  );
+}
 
-function pickMediaType(mime: string): ImageMediaType {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+type ImageMime = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
+function pickMime(mime: string): ImageMime {
   if (mime === "image/jpeg" || mime === "image/jpg") return "image/jpeg";
   if (mime === "image/gif") return "image/gif";
   if (mime === "image/webp") return "image/webp";
@@ -76,24 +84,19 @@ function pickMediaType(mime: string): ImageMediaType {
 }
 
 export async function POST(req: Request) {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const apiKey = process.env.GOOGLE_API_KEY;
+  if (!apiKey) {
     return NextResponse.json(
-      { error: "ANTHROPIC_API_KEY not configured" },
+      { error: "GOOGLE_API_KEY not configured" },
       { status: 500 },
     );
   }
 
   let file: Blob | null = null;
-  let widthHint: number | null = null;
-  let heightHint: number | null = null;
   try {
     const formData = await req.formData();
     const candidate = formData.get("file");
     if (candidate instanceof Blob) file = candidate;
-    const w = Number(formData.get("width"));
-    const h = Number(formData.get("height"));
-    if (Number.isFinite(w) && w > 0) widthHint = Math.round(w);
-    if (Number.isFinite(h) && h > 0) heightHint = Math.round(h);
   } catch {
     return NextResponse.json({ error: "invalid form data" }, { status: 400 });
   }
@@ -101,70 +104,109 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "missing file" }, { status: 400 });
   }
 
-  const mime = file.type || "image/png";
-  const mediaType = pickMediaType(mime);
+  const mime = pickMime(file.type || "image/png");
   const buffer = Buffer.from(await file.arrayBuffer());
   const base64 = buffer.toString("base64");
 
-  const sizeNote =
-    widthHint && heightHint
-      ? `The attached screenshot is exactly ${widthHint} × ${heightHint} pixels. All cx, cy must be integers within [0, ${widthHint}] and [0, ${heightHint}] respectively.`
-      : "";
-
   try {
-    const response = await client.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system: [
-        {
-          type: "text",
-          text: SYSTEM_PROMPT,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      output_config: {
-        format: { type: "json_schema", schema: SCHEMA },
-      },
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: { type: "base64", media_type: mediaType, data: base64 },
-            },
-            {
-              type: "text",
-              text: `${sizeNote}\n\nExtract every user row visible in this screenshot.`.trim(),
-            },
-          ],
-        },
-      ],
-    });
+    const client = new GoogleGenerativeAI(apiKey);
+    const prompt = [
+      { inlineData: { mimeType: mime, data: base64 } },
+      "Extract every ranked user row: rank, name, and the avatar bounding box.",
+    ];
 
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("");
+    // Model fallback chain. A 503 ("high demand") is the model's server-side
+    // capacity, not our key's quota — so when one model is overloaded we fall
+    // to a capacity-diverse alternative. Each model gets a couple of backed-off
+    // retries; a non-transient error (e.g. a 404 model name) just skips to the
+    // next model rather than killing the chain.
+    // Ordered newest-capable-first, then capacity-diverse fallbacks. Live probe
+    // (2026-06) showed 2.5-flash 503ing and the 2.0/2.5-pro family 429 rate-
+    // limited, while the Gemini 3.x flash models had capacity — and being a
+    // newer generation they also tend to ground boxes better, which is our core
+    // problem. A 429/503/404 on any model just rolls to the next.
+    const MODELS = [
+      "gemini-3.5-flash",
+      "gemini-2.5-flash",
+      "gemini-3-flash-preview",
+      "gemini-2.5-flash-lite",
+      "gemini-flash-latest",
+    ];
+    const ATTEMPTS_PER_MODEL = 2;
+    let result;
+    let usedModel = "";
+    let lastErr: unknown;
+    let sawTransient = false;
+    outer: for (const modelName of MODELS) {
+      const model = client.getGenerativeModel({
+        model: modelName,
+        systemInstruction: SYSTEM_PROMPT,
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: SCHEMA,
+          temperature: 0,
+        },
+      });
+      for (let attempt = 1; attempt <= ATTEMPTS_PER_MODEL; attempt++) {
+        try {
+          result = await model.generateContent(prompt);
+          usedModel = modelName;
+          break outer;
+        } catch (err) {
+          lastErr = err;
+          const transient = isTransient(err);
+          sawTransient = sawTransient || transient;
+          console.warn(
+            `[parse-screenshot] ${modelName} ${transient ? "transient" : "error"} (attempt ${attempt}/${ATTEMPTS_PER_MODEL}): ${err instanceof Error ? err.message.slice(0, 80) : err}`,
+          );
+          if (!transient) break; // bad model/request → try next model immediately
+          if (attempt < ATTEMPTS_PER_MODEL) {
+            await sleep(700 * 2 ** (attempt - 1) + Math.floor(Math.random() * 400));
+          }
+        }
+      }
+    }
+    if (!result) {
+      console.error("[parse-screenshot] all models failed");
+      if (sawTransient) {
+        return NextResponse.json(
+          { error: "Gemini が一時的に混雑しています。少し待って再アップロードしてください。" },
+          { status: 503 },
+        );
+      }
+      throw lastErr ?? new Error("all models failed");
+    }
+    if (usedModel !== MODELS[0]) {
+      console.warn(`[parse-screenshot] fell back to ${usedModel}`);
+    }
+
+    const text = result.response.text();
     if (!text) {
-      return NextResponse.json(
-        { error: "empty model response" },
-        { status: 502 },
-      );
+      return NextResponse.json({ error: "empty response" }, { status: 502 });
     }
-
-    const parsed = JSON.parse(text);
-    return NextResponse.json(parsed);
-  } catch (e) {
-    if (e instanceof Anthropic.APIError) {
-      return NextResponse.json(
-        { error: `Anthropic ${e.status}: ${e.message}` },
-        { status: e.status ?? 502 },
-      );
-    }
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "unknown error" },
-      { status: 500 },
+    const parsed = JSON.parse(text) as {
+      entries: Array<{
+        rank: number;
+        name: string;
+        ymin: number;
+        xmin: number;
+        ymax: number;
+        xmax: number;
+      }>;
+    };
+    console.log(
+      `[parse-screenshot] ${usedModel} returned ${parsed.entries?.length ?? 0} entries`,
     );
+    return NextResponse.json({ ...parsed, _model: usedModel });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown error";
+    console.error("[parse-screenshot] error:", msg);
+    if (isTransient(e)) {
+      return NextResponse.json(
+        { error: "Gemini が一時的に混雑しています。少し待って再アップロードしてください。" },
+        { status: 503 },
+      );
+    }
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

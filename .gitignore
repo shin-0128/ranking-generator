@@ -39,3 +39,11 @@ next-env.d.ts
 tt*.png
 tt*.png.jpg
 tt*_v*.png
+
+# real-user test fixtures (privacy: do not commit)
+test-shots/*
+!test-shots/.gitkeep
+
+# debug artifacts from test scripts (keep the .mjs tools, drop their output)
+scripts/*.png
+scripts/detections.json

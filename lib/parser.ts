@@ -1,47 +1,28 @@
 import type { ExtractedEntry } from "./extractor/types";
 import { cleanName } from "./cleaner";
-import { detectAvatars, matchByY } from "./extractor/avatar-detect";
+import { boxesToCircles, type Circle } from "./extractor/avatar-detect";
 
-interface IconCircle {
-  cx: number;
-  cy: number;
-  r: number;
-}
-
-interface ParseResponse {
-  entries: Array<{
-    rank: number;
-    name: string;
-    iconCircle: IconCircle;
-  }>;
-}
-
-interface GeminiBox {
+interface ParseEntry {
+  rank: number;
+  name: string;
   ymin: number;
   xmin: number;
   ymax: number;
   xmax: number;
 }
 
-interface GeminiResponse {
-  avatars: GeminiBox[];
-}
-
-function boxToCircle(box: GeminiBox, W: number, H: number): IconCircle {
-  // box coords are in [0, 1000] normalized space
-  const xmin = (box.xmin / 1000) * W;
-  const xmax = (box.xmax / 1000) * W;
-  const ymin = (box.ymin / 1000) * H;
-  const ymax = (box.ymax / 1000) * H;
-  const cx = (xmin + xmax) / 2;
-  const cy = (ymin + ymax) / 2;
-  const w = xmax - xmin;
-  const h = ymax - ymin;
-  const r = Math.max(w, h) / 2;
-  return { cx, cy, r };
+interface ParseResponse {
+  entries: ParseEntry[];
 }
 
 const MAX_DIM = 1568;
+// Crop radius as a fraction of the avatar radius. Slightly NEGATIVE so the
+// avatar fills the template's gold circle edge-to-edge instead of leaving a
+// background ring (the detector is told to box "slightly large", so a small
+// inward trim cancels that margin). Tuned against the 13-shot set rendered as
+// real circular cells — see scripts/tune-padding.mjs. With 3.5-flash's accurate
+// centring + median stabilisation, the lost safety margin isn't needed.
+const CROP_PADDING = -0.05;
 
 function loadImageFromFile(file: File): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -65,7 +46,6 @@ function clamp(v: number, min: number, max: number): number {
 
 async function preprocessToCanvas(file: File): Promise<{
   fullCanvas: HTMLCanvasElement;
-  smallCanvas: HTMLCanvasElement;
   smallBlob: Blob;
 }> {
   const img = await loadImageFromFile(file);
@@ -77,6 +57,9 @@ async function preprocessToCanvas(file: File): Promise<{
   if (!fullCtx) throw new Error("Canvas 2D context unavailable");
   fullCtx.drawImage(img, 0, 0);
 
+  // Downscale for the API call (keeps the request under Vercel's 4.5MB body
+  // limit). Coordinates come back normalized [0,1000], so the downscale never
+  // costs us resolution — refinement runs on the full-res canvas.
   const longest = Math.max(img.naturalWidth, img.naturalHeight);
   const scale = longest > MAX_DIM ? MAX_DIM / longest : 1;
   const w = Math.round(img.naturalWidth * scale);
@@ -95,16 +78,21 @@ async function preprocessToCanvas(file: File): Promise<{
       "image/png",
     );
   });
-  return { fullCanvas, smallCanvas, smallBlob };
+  return { fullCanvas, smallBlob };
 }
 
 function cropCircleToSquareCanvas(
   source: HTMLCanvasElement,
-  circle: IconCircle,
+  circle: Circle,
+  paddingFactor: number,
 ): HTMLCanvasElement {
   const W = source.width;
   const H = source.height;
-  const r = clamp(Math.round(circle.r), 4, Math.min(W, H) / 2);
+  const r = clamp(
+    Math.round(circle.r * (1 + paddingFactor)),
+    4,
+    Math.min(W, H) / 2,
+  );
   const cx = clamp(Math.round(circle.cx), r, W - r);
   const cy = clamp(Math.round(circle.cy), r, H - r);
   const size = r * 2;
@@ -117,84 +105,53 @@ function cropCircleToSquareCanvas(
   return c;
 }
 
-async function callParse(blob: Blob, w: number, h: number): Promise<ParseResponse> {
+async function callParse(blob: Blob): Promise<ParseResponse> {
   const fd = new FormData();
   fd.append("file", new File([blob], "screenshot.png", { type: "image/png" }));
-  fd.append("width", String(w));
-  fd.append("height", String(h));
   const res = await fetch("/api/parse-screenshot", { method: "POST", body: fd });
   if (!res.ok) {
     let message = `parse failed: ${res.status}`;
     try {
       const err = (await res.json()) as { error?: string };
       if (err.error) message = err.error;
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     throw new Error(message);
   }
   return (await res.json()) as ParseResponse;
 }
 
-async function callDetect(blob: Blob): Promise<GeminiResponse | null> {
-  try {
-    const fd = new FormData();
-    fd.append("file", new File([blob], "screenshot.png", { type: "image/png" }));
-    const res = await fetch("/api/detect-avatars", { method: "POST", body: fd });
-    if (!res.ok) {
-      console.warn(`[parser] gemini detect failed: ${res.status}`);
-      return null;
-    }
-    return (await res.json()) as GeminiResponse;
-  } catch (e) {
-    console.warn("[parser] gemini detect error", e);
-    return null;
-  }
-}
-
 export async function parseScreenshot(file: File): Promise<ExtractedEntry[]> {
-  const { fullCanvas, smallCanvas, smallBlob } = await preprocessToCanvas(file);
+  const { fullCanvas, smallBlob } = await preprocessToCanvas(file);
   const screenshotUrl = fullCanvas.toDataURL("image/png");
-  const scaleX = fullCanvas.width / smallCanvas.width;
-  const scaleY = fullCanvas.height / smallCanvas.height;
   const FW = fullCanvas.width;
   const FH = fullCanvas.height;
 
-  // Run Claude (rank+name) and Gemini (avatar bounding boxes) in parallel
-  const [data, gemini] = await Promise.all([
-    callParse(smallBlob, smallCanvas.width, smallCanvas.height),
-    callDetect(smallBlob),
-  ]);
+  // One grounded pass: rank + name + coarse avatar box, bound together per row.
+  const data = await callParse(smallBlob);
+  const entries = (data.entries ?? [])
+    .slice()
+    .sort((a, b) => a.ymin - b.ymin);
 
-  // Convert Gemini boxes to full-resolution circles, sorted by Y
-  const geminiCircles: IconCircle[] = (gemini?.avatars ?? [])
-    .map((b) => boxToCircle(b, FW, FH))
-    .sort((a, b) => a.cy - b.cy);
-
-  // Fallback heuristic detection
-  const heuristicDetected = geminiCircles.length === 0
-    ? detectAvatars(fullCanvas)
-    : [];
-
-  // Match Claude's entries to detected circles by Y proximity (loose tolerance)
-  const candidates = geminiCircles.length > 0 ? geminiCircles : heuristicDetected;
-  const tolerancePx = Math.round(FH * 0.08);
-  const hints = data.entries.map((e) => ({ cy: e.iconCircle.cy * scaleY }));
-  const matches = matchByY(hints, candidates, tolerancePx);
-  const matchedCount = matches.filter((m) => m).length;
-  console.log(
-    `[parser] gemini=${geminiCircles.length} heuristic=${heuristicDetected.length} entries=${data.entries.length} matched=${matchedCount} (tol=${tolerancePx}px)`,
+  // Normalized [0,1000] boxes -> full-res -> stable circles (cx & r snapped to
+  // the row-wise median; cy from each box's top edge). No pixel-scan refine.
+  const circles: Circle[] = boxesToCircles(
+    entries.map((e) => ({
+      x0: (e.xmin / 1000) * FW,
+      y0: (e.ymin / 1000) * FH,
+      x1: (e.xmax / 1000) * FW,
+      y1: (e.ymax / 1000) * FH,
+    })),
   );
 
-  return data.entries.map((entry, i) => {
-    const claudeFull: IconCircle = {
-      cx: entry.iconCircle.cx * scaleX,
-      cy: entry.iconCircle.cy * scaleY,
-      r: entry.iconCircle.r * scaleX,
-    };
-    const matched = matches[i];
-    const finalCircle: IconCircle = matched
-      ? { cx: matched.cx, cy: matched.cy, r: matched.r }
-      : claudeFull;
-    const iconCanvas = cropCircleToSquareCanvas(fullCanvas, finalCircle);
+  console.log(
+    `[parser] entries=${entries.length} circles=${circles.length} medR=${Math.round(circles[0]?.r ?? 0)}`,
+  );
+
+  return entries.map((entry, i) => {
+    const circle = circles[i];
+    const iconCanvas = cropCircleToSquareCanvas(fullCanvas, circle, CROP_PADDING);
     return {
       rank: entry.rank,
       iconImage: iconCanvas.toDataURL("image/png"),
@@ -204,11 +161,11 @@ export async function parseScreenshot(file: File): Promise<ExtractedEntry[]> {
         screenshotUrl,
         width: FW,
         height: FH,
-        iconHint: claudeFull,
-        detected: candidates,
+        iconHint: circle,
+        detected: circles,
       },
-      pickPos: { x: finalCircle.cx, y: finalCircle.cy },
-      pickRadius: Math.round(finalCircle.r),
+      pickPos: { x: circle.cx, y: circle.cy },
+      pickRadius: Math.round(circle.r * (1 + CROP_PADDING)),
     };
   });
 }
