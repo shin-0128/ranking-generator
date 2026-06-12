@@ -1,6 +1,6 @@
 "use client";
 
-const OPTIONS = [10];
+const OPTIONS = [10, 20, 30, 50, 100];
 
 interface Props {
   value: number;

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ImageUploader } from "@/components/ImageUploader";
 import { EntryEditor } from "@/components/EntryEditor";
 import { RankSelector } from "@/components/RankSelector";
-import { RankingCanvas } from "@/components/RankingCanvas";
+import { RankingPages } from "@/components/RankingPages";
 import { ScreenshotIconPicker } from "@/components/ScreenshotIconPicker";
 import type { ExtractedEntry } from "@/lib/extractor/types";
 import type { ThemeConfig } from "@/lib/composer";
@@ -282,10 +282,11 @@ export default function Home() {
             </p>
           )}
           {theme && (
-            <RankingCanvas
+            <RankingPages
               theme={theme}
               templateUrl={TEMPLATE_URL}
               entries={entries}
+              rankCount={rankCount}
               title={title}
               showCalibration={showCalibration}
             />

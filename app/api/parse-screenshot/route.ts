@@ -19,24 +19,20 @@ export const maxDuration = 60;
  * pixel-tight (see GroundingME / ScreenSpot-Pro: small-object grounding is
  * the systemic weak point of every current VLM).
  */
-const SYSTEM_PROMPT = `You read TikTok contribution-ranking screenshots and return one record per visible user row, top-to-bottom.
+// Keep this LEAN. A verbose prompt — especially spelling out the coordinate
+// frame ("0 = top/left … 1000 = bottom/right of the image") — makes some models
+// (e.g. 2.5-flash-lite) emit boxes on a 1000×1000 SQUARE grid instead of the
+// image's true aspect, which then maps to the wrong pixels and drifts the crop.
+// Concise instructions keep every model's grounding aspect-correct. Measured,
+// not guessed: see scripts/probe-models.mjs.
+const SYSTEM_PROMPT = `You read TikTok contribution-ranking screenshots. Return one record per visible user row in the ranking list, top-to-bottom.
 
-For EACH user row in the ranking list return:
-- rank: the integer position number at the far left of the row (e.g. 1, 2, 13, 14).
-- name: the user's display name. KEEP decorative emoji and symbols as-is (the caller cleans them). EXCLUDE: the badge text "奇想天外", roman-numeral tier markers (Ⅰ–Ⅻ / I–XII), the coin amount line (e.g. "コイン949.4 K枚"), and any UI labels.
-- box: a TIGHT bounding box around the user's circular profile avatar — the round photo (face / character / object) that sits between the rank number (left) and the name/badge (right). Return NORMALIZED integers in [0,1000] where 0 = top/left edge and 1000 = bottom/right edge of the image:
-    ymin, xmin = top-left corner
-    ymax, xmax = bottom-right corner
+For each row:
+- rank: the position number at the far left (e.g. 1, 13, 14).
+- name: the display name. Keep decorative emoji as-is. Exclude the "奇想天外" badge, roman-numeral tier markers (Ⅰ–Ⅻ / I–XII), the coin line (e.g. "コイン949.4 K枚"), and UI labels.
+- a tight bounding box (ymin, xmin, ymax, xmax, normalized 0–1000) around the user's round profile avatar — the circular photo between the rank number and the name. Box only the photo, not the rank number, badge, name, or any VIP/VVIP pill overlapping its bottom.
 
-Rules for box:
-1. Enclose ONLY the circular profile photo. Do NOT include the rank number, the "奇想天外" badge, tier markers, the name, or coin text.
-2. The avatar is roughly square (width ≈ height) and visually the same size across all rows of one screenshot. If your box sizes vary wildly between rows, you are targeting the wrong things — re-check.
-3. If a "VIP" / "VVIP" / level badge or pill overlaps or hangs off the BOTTOM edge of the avatar, do NOT extend the box to include it. The box bottom is the circular photo's own bottom edge.
-4. Err slightly LARGE (a few pixels of surrounding background) rather than too small (cutting the photo).
-
-IGNORE entirely: the status bar (time/battery), the page header/title bar and any avatars inside it, filter dropdowns/tabs, and the bottom navigation bar. Only rows in the ranked list count.
-
-Return EVERY visible ranked row in order, even if a row is partially clipped at the top or bottom — as long as its rank number and avatar are visible. Do NOT omit rows. If the image is not a TikTok ranking screen, return an empty list.`;
+Return every visible ranked row in order; do not omit rows. Ignore the status bar, the page header and any avatars in it, filter tabs, and the bottom navigation. If it is not a ranking screen, return an empty list.`;
 
 const SCHEMA: Schema = {
   type: SchemaType.OBJECT,
@@ -72,7 +68,32 @@ function isTransient(err: unknown): boolean {
   );
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+interface BoxEntry {
+  rank: number;
+  name: string;
+  ymin: number;
+  xmin: number;
+  ymax: number;
+  xmax: number;
+}
+
+/**
+ * Detect a "square-grid" response: boxes normalized to a 1000×1000 square rather
+ * than the image's true aspect. For a square avatar the box w/h should match the
+ * image aspect (H/W); square-grid responses come back ≈1 and map to the wrong
+ * pixels (drifted crops). When the median box ratio is closer to 1 than to the
+ * image aspect, the response is unusable → caller falls to another model.
+ */
+function looksSquareGrid(entries: BoxEntry[], W: number, H: number): boolean {
+  if (!W || !H || entries.length === 0) return false;
+  const aspect = H / W;
+  if (Math.abs(aspect - 1) < 0.25) return false; // near-square image: can't tell
+  const ratios = entries
+    .map((e) => (e.xmax - e.xmin) / Math.max(1, e.ymax - e.ymin))
+    .sort((a, b) => a - b);
+  const med = ratios[Math.floor(ratios.length / 2)];
+  return Math.abs(med - 1) < Math.abs(med - aspect);
+}
 
 type ImageMime = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 
@@ -93,10 +114,14 @@ export async function POST(req: Request) {
   }
 
   let file: Blob | null = null;
+  let imgW = 0;
+  let imgH = 0;
   try {
     const formData = await req.formData();
     const candidate = formData.get("file");
     if (candidate instanceof Blob) file = candidate;
+    imgW = Number(formData.get("width")) || 0;
+    imgH = Number(formData.get("height")) || 0;
   } catch {
     return NextResponse.json({ error: "invalid form data" }, { status: 400 });
   }
@@ -115,58 +140,72 @@ export async function POST(req: Request) {
       "Extract every ranked user row: rank, name, and the avatar bounding box.",
     ];
 
-    // Model fallback chain. A 503 ("high demand") is the model's server-side
-    // capacity, not our key's quota — so when one model is overloaded we fall
-    // to a capacity-diverse alternative. Each model gets a couple of backed-off
-    // retries; a non-transient error (e.g. a 404 model name) just skips to the
-    // next model rather than killing the chain.
-    // Ordered newest-capable-first, then capacity-diverse fallbacks. Live probe
-    // (2026-06) showed 2.5-flash 503ing and the 2.0/2.5-pro family 429 rate-
-    // limited, while the Gemini 3.x flash models had capacity — and being a
-    // newer generation they also tend to ground boxes better, which is our core
-    // problem. A 429/503/404 on any model just rolls to the next.
+    // Model fallback chain, ONE shot per model. A slow/hung model (network
+    // timeout) or an overloaded one (503/429) is abandoned immediately for a
+    // capacity-diverse alternative rather than retried in place — retrying the
+    // same stalled endpoint is what ballooned latency to 60–160s on flaky
+    // connections. A whole pass through the chain (each capped at `timeout`,
+    // and the lot capped at OVERALL_BUDGET) bounds the user's wait.
+    //
+    // Gemini 3.x flash models ONLY. The 2.5 family is prompt-fragile on box
+    // coordinates — it intermittently emits square-grid boxes that drift the
+    // crop (measured: scripts/probe-models.mjs), so it's excluded despite being
+    // available. 3.5-flash grounds best; the lite 3.x models are the reliable
+    // always-aspect-correct workhorses when the bigger ones are congested.
     const MODELS = [
       "gemini-3.5-flash",
-      "gemini-2.5-flash",
       "gemini-3-flash-preview",
-      "gemini-2.5-flash-lite",
+      "gemini-3.1-flash-lite",
+      "gemini-flash-lite-latest",
       "gemini-flash-latest",
     ];
-    const ATTEMPTS_PER_MODEL = 2;
-    let result;
+    const PER_ATTEMPT_TIMEOUT = 30000;
+    const OVERALL_BUDGET = 50000;
+    const startedAt = Date.now();
+    let parsed: { entries: BoxEntry[] } | null = null;
     let usedModel = "";
     let lastErr: unknown;
     let sawTransient = false;
-    outer: for (const modelName of MODELS) {
-      const model = client.getGenerativeModel({
-        model: modelName,
-        systemInstruction: SYSTEM_PROMPT,
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: SCHEMA,
-          temperature: 0,
+    for (const modelName of MODELS) {
+      if (Date.now() - startedAt > OVERALL_BUDGET) break;
+      const model = client.getGenerativeModel(
+        {
+          model: modelName,
+          systemInstruction: SYSTEM_PROMPT,
+          generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: SCHEMA,
+            temperature: 0,
+          },
         },
-      });
-      for (let attempt = 1; attempt <= ATTEMPTS_PER_MODEL; attempt++) {
-        try {
-          result = await model.generateContent(prompt);
-          usedModel = modelName;
-          break outer;
-        } catch (err) {
-          lastErr = err;
-          const transient = isTransient(err);
-          sawTransient = sawTransient || transient;
+        { timeout: PER_ATTEMPT_TIMEOUT },
+      );
+      try {
+        const result = await model.generateContent(prompt);
+        const text = result.response.text();
+        if (!text) throw new Error("empty response");
+        const candidate = JSON.parse(text) as { entries: BoxEntry[] };
+        // Guard: reject square-grid coordinates and fall to another model.
+        if (looksSquareGrid(candidate.entries ?? [], imgW, imgH)) {
+          lastErr = new Error("square-grid coordinates");
           console.warn(
-            `[parse-screenshot] ${modelName} ${transient ? "transient" : "error"} (attempt ${attempt}/${ATTEMPTS_PER_MODEL}): ${err instanceof Error ? err.message.slice(0, 80) : err}`,
+            `[parse-screenshot] ${modelName} returned square-grid coords → next`,
           );
-          if (!transient) break; // bad model/request → try next model immediately
-          if (attempt < ATTEMPTS_PER_MODEL) {
-            await sleep(700 * 2 ** (attempt - 1) + Math.floor(Math.random() * 400));
-          }
+          continue;
         }
+        parsed = candidate;
+        usedModel = modelName;
+        break;
+      } catch (err) {
+        lastErr = err;
+        const transient = isTransient(err);
+        sawTransient = sawTransient || transient;
+        console.warn(
+          `[parse-screenshot] ${modelName} ${transient ? "transient" : "error"} → next: ${err instanceof Error ? err.message.slice(0, 80) : err}`,
+        );
       }
     }
-    if (!result) {
+    if (!parsed) {
       console.error("[parse-screenshot] all models failed");
       if (sawTransient) {
         return NextResponse.json(
@@ -179,21 +218,6 @@ export async function POST(req: Request) {
     if (usedModel !== MODELS[0]) {
       console.warn(`[parse-screenshot] fell back to ${usedModel}`);
     }
-
-    const text = result.response.text();
-    if (!text) {
-      return NextResponse.json({ error: "empty response" }, { status: 502 });
-    }
-    const parsed = JSON.parse(text) as {
-      entries: Array<{
-        rank: number;
-        name: string;
-        ymin: number;
-        xmin: number;
-        ymax: number;
-        xmax: number;
-      }>;
-    };
     console.log(
       `[parse-screenshot] ${usedModel} returned ${parsed.entries?.length ?? 0} entries`,
     );

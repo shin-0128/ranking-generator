@@ -72,10 +72,14 @@ async function preprocessToCanvas(file: File): Promise<{
   smallCtx.imageSmoothingEnabled = true;
   smallCtx.imageSmoothingQuality = "high";
   smallCtx.drawImage(img, 0, 0, w, h);
+  // JPEG, not PNG: a TikTok screenshot as PNG is 1–3 MB, which is slow to upload
+  // to the API (and on a flaky connection times out). JPEG q0.85 is ~150–400 KB
+  // and detection doesn't need lossless. Big win on slow networks.
   const smallBlob: Blob = await new Promise((resolve, reject) => {
     smallCanvas.toBlob(
       (b) => (b ? resolve(b) : reject(new Error("toBlob failed"))),
-      "image/png",
+      "image/jpeg",
+      0.85,
     );
   });
   return { fullCanvas, smallBlob };
@@ -105,9 +109,13 @@ function cropCircleToSquareCanvas(
   return c;
 }
 
-async function callParse(blob: Blob): Promise<ParseResponse> {
+async function callParse(blob: Blob, w: number, h: number): Promise<ParseResponse> {
   const fd = new FormData();
-  fd.append("file", new File([blob], "screenshot.png", { type: "image/png" }));
+  fd.append("file", new File([blob], "screenshot.jpg", { type: "image/jpeg" }));
+  // Dimensions let the server reject "square-grid" responses (boxes normalized
+  // to a 1000×1000 square instead of the true aspect) and fall to another model.
+  fd.append("width", String(w));
+  fd.append("height", String(h));
   const res = await fetch("/api/parse-screenshot", { method: "POST", body: fd });
   if (!res.ok) {
     let message = `parse failed: ${res.status}`;
@@ -129,7 +137,7 @@ export async function parseScreenshot(file: File): Promise<ExtractedEntry[]> {
   const FH = fullCanvas.height;
 
   // One grounded pass: rank + name + coarse avatar box, bound together per row.
-  const data = await callParse(smallBlob);
+  const data = await callParse(smallBlob, FW, FH);
   const entries = (data.entries ?? [])
     .slice()
     .sort((a, b) => a.ymin - b.ymin);

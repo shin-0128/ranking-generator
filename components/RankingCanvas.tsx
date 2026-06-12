@@ -9,6 +9,12 @@ interface Props {
   entries: ExtractedEntry[];
   title?: string;
   showCalibration?: boolean;
+  /** Shown above the canvas (e.g. "11–20位") when paginating. */
+  heading?: string;
+  /** Download filename without extension. */
+  downloadName?: string;
+  /** Lets a parent collect this page's canvas for a "save all" action. */
+  registerRef?: (el: HTMLCanvasElement | null) => void;
 }
 
 function todayStamp(): string {
@@ -16,10 +22,24 @@ function todayStamp(): string {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export function RankingCanvas({ theme, templateUrl, entries, title, showCalibration }: Props) {
+export function RankingCanvas({
+  theme,
+  templateUrl,
+  entries,
+  title,
+  showCalibration,
+  heading,
+  downloadName,
+  registerRef,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    registerRef?.(canvasRef.current);
+    return () => registerRef?.(null);
+  }, [registerRef]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -56,7 +76,7 @@ export function RankingCanvas({ theme, templateUrl, entries, title, showCalibrat
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `ranking_${todayStamp()}.png`;
+      a.download = `${downloadName ?? `ranking_${todayStamp()}`}.png`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -71,6 +91,9 @@ export function RankingCanvas({ theme, templateUrl, entries, title, showCalibrat
           エラー: {error}
         </p>
       )}
+      {heading && (
+        <p className="text-sm font-semibold text-amber-400">{heading}</p>
+      )}
       <div className="flex justify-center bg-zinc-900 rounded p-2">
         <canvas
           ref={canvasRef}
@@ -84,7 +107,7 @@ export function RankingCanvas({ theme, templateUrl, entries, title, showCalibrat
           disabled={busy}
           className="rounded-md bg-amber-500 hover:bg-amber-400 disabled:bg-zinc-700 disabled:text-zinc-500 px-5 py-2 text-sm font-semibold text-zinc-900 transition-colors"
         >
-          画像を保存
+          {heading ? `${heading}を保存` : "画像を保存"}
         </button>
       </div>
     </div>
