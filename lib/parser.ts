@@ -109,25 +109,43 @@ function cropCircleToSquareCanvas(
   return c;
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function callParse(blob: Blob, w: number, h: number): Promise<ParseResponse> {
-  const fd = new FormData();
-  fd.append("file", new File([blob], "screenshot.jpg", { type: "image/jpeg" }));
-  // Dimensions let the server reject "square-grid" responses (boxes normalized
-  // to a 1000×1000 square instead of the true aspect) and fall to another model.
-  fd.append("width", String(w));
-  fd.append("height", String(h));
-  const res = await fetch("/api/parse-screenshot", { method: "POST", body: fd });
-  if (!res.ok) {
-    let message = `parse failed: ${res.status}`;
+  // Retry network failures and transient 503s. Mobile connections drop requests
+  // mid-flight (Safari surfaces this as "Load failed"), so a quiet retry keeps
+  // testers from ever seeing it. HTTP errors other than 503 fail fast.
+  const MAX_ATTEMPTS = 3;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const err = (await res.json()) as { error?: string };
-      if (err.error) message = err.error;
-    } catch {
-      /* ignore */
+      // Rebuild the body each attempt — a consumed stream can't be re-sent.
+      const fd = new FormData();
+      fd.append("file", new File([blob], "screenshot.jpg", { type: "image/jpeg" }));
+      // Dimensions let the server reject "square-grid" responses (boxes
+      // normalized to a 1000×1000 square instead of the true aspect).
+      fd.append("width", String(w));
+      fd.append("height", String(h));
+      const res = await fetch("/api/parse-screenshot", { method: "POST", body: fd });
+      if (res.ok) return (await res.json()) as ParseResponse;
+
+      let message = `parse failed: ${res.status}`;
+      try {
+        const err = (await res.json()) as { error?: string };
+        if (err.error) message = err.error;
+      } catch {
+        /* ignore */
+      }
+      // 503 = server exhausted its model chain; a retry may catch a free model.
+      if (res.status !== 503) throw new Error(message);
+      lastErr = new Error(message);
+    } catch (e) {
+      // fetch() throwing = network drop (Safari "Load failed", "Failed to fetch").
+      lastErr = e;
     }
-    throw new Error(message);
+    if (attempt < MAX_ATTEMPTS) await sleep(1200 * attempt);
   }
-  return (await res.json()) as ParseResponse;
+  throw lastErr instanceof Error ? lastErr : new Error("parse failed");
 }
 
 export async function parseScreenshot(file: File): Promise<ExtractedEntry[]> {
