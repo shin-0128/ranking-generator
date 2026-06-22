@@ -9,6 +9,8 @@
  * Validated shape: see scripts/shotstack-poc.mjs. JP text REQUIRES the hosted
  * font (timeline.fonts) — Shotstack's HTML fallback renders tofu without it.
  */
+import { getGenre } from "./reelGenres";
+
 const ENV = "stage"; // sandbox; switch to "v1" on a paid plan (drops watermark)
 const HOST = `https://api.shotstack.io/edit/${ENV}`;
 const INGEST = `https://api.shotstack.io/ingest/${ENV}`;
@@ -70,21 +72,21 @@ const medal = (r: number) => (r === 1 ? "🥇" : r === 2 ? "🥈" : r === 3 ? "�
 
 // HTML assets authored at the 1080-wide output res so text stays crisp
 // (a smaller asset gets upscaled by Shotstack and looks soft).
-function rankHtml(rank: number) {
+function rankHtml(rank: number, color: string) {
   const m = medal(rank);
   return {
     type: "html" as const,
     html: `<p class="r">${m ? m + " " : ""}第 ${rank} 位</p>`,
-    css: `.r{font-family:'Noto Sans JP',sans-serif;font-size:144px;font-weight:700;color:#FFD24D;text-align:center;text-shadow:0 6px 24px rgba(0,0,0,.6);margin:0}`,
+    css: `.r{font-family:'Noto Sans JP',sans-serif;font-size:144px;font-weight:700;color:${color};text-align:center;text-shadow:0 6px 24px rgba(0,0,0,.6);margin:0}`,
     width: 1080,
     height: 300,
   };
 }
-function nameHtml(name: string) {
+function nameHtml(name: string, color: string) {
   return {
     type: "html" as const,
     html: `<p class="n">${escapeHtml(name)}</p>`,
-    css: `.n{font-family:'Noto Sans JP',sans-serif;font-size:112px;font-weight:700;color:#fff;text-align:center;text-shadow:0 6px 24px rgba(0,0,0,.7);margin:0}`,
+    css: `.n{font-family:'Noto Sans JP',sans-serif;font-size:112px;font-weight:700;color:${color};text-align:center;text-shadow:0 6px 24px rgba(0,0,0,.7);margin:0}`,
     width: 1080,
     height: 240,
   };
@@ -95,11 +97,11 @@ function escapeHtml(s: string) {
   );
 }
 
-function titleHtml(title: string) {
+function titleHtml(title: string, color: string) {
   return {
     type: "html" as const,
     html: `<div class="t"><p class="big">${escapeHtml(title)}</p><p class="sub">発 表</p></div>`,
-    css: `.t{display:flex;flex-direction:column;align-items:center;gap:24px}.big{font-family:'Noto Sans JP',sans-serif;font-size:156px;font-weight:700;color:#FFD24D;text-shadow:0 8px 32px rgba(0,0,0,.6);margin:0}.sub{font-family:'Noto Sans JP',sans-serif;font-size:72px;font-weight:700;color:#fff;letter-spacing:.3em;margin:0}`,
+    css: `.t{display:flex;flex-direction:column;align-items:center;gap:24px}.big{font-family:'Noto Sans JP',sans-serif;font-size:156px;font-weight:700;color:${color};text-shadow:0 8px 32px rgba(0,0,0,.6);margin:0}.sub{font-family:'Noto Sans JP',sans-serif;font-size:72px;font-weight:700;color:#fff;letter-spacing:.3em;margin:0}`,
     width: 1080,
     height: 540,
   };
@@ -111,7 +113,13 @@ function titleHtml(title: string) {
 // burst that fades on landing.
 const ease = (easing: string) => ({ interpolation: "bezier", easing });
 
-export function buildReelEdit(entries: ReelEntry[], title = "ランキング") {
+export function buildReelEdit(
+  entries: ReelEntry[],
+  title = "ランキング",
+  genreId?: string,
+) {
+  const genre = getGenre(genreId);
+  const genreBase = `${ASSET_BASE}/genres/${genre.id}`;
   const order = [...entries].sort((a, b) => b.rank - a.rank); // reveal high→low
   const intro = 1.6;
   const dur = 2.4;
@@ -119,7 +127,7 @@ export function buildReelEdit(entries: ReelEntry[], title = "ランキング") {
   const at = (i: number) => intro + i * dur;
 
   const titleClip = {
-    asset: titleHtml(title),
+    asset: titleHtml(title, genre.rankColor),
     start: 0,
     length: intro,
     transition: { in: "zoom", out: "fade" },
@@ -148,7 +156,7 @@ export function buildReelEdit(entries: ReelEntry[], title = "ランキング") {
     opacity: [{ from: 0.85, to: 0, start: 0, length: 0.26, ...ease("easeOutQuad") }],
   }));
   const speedlineClips = order.map((e, i) => ({
-    asset: { type: "image", src: `${ASSET_BASE}/speedlines.png` },
+    asset: { type: "image", src: `${genreBase}/speedlines.png` },
     start: at(i),
     length: 0.55,
     fit: "none",
@@ -157,7 +165,7 @@ export function buildReelEdit(entries: ReelEntry[], title = "ランキング") {
     opacity: [{ from: 0.85, to: 0, start: 0, length: 0.42, ...ease("easeOutQuad") }],
   }));
   const rankClips = order.map((e, i) => ({
-    asset: rankHtml(e.rank),
+    asset: rankHtml(e.rank, genre.rankColor),
     start: at(i),
     length: dur,
     position: "top",
@@ -165,7 +173,7 @@ export function buildReelEdit(entries: ReelEntry[], title = "ランキング") {
     transition: { in: "slideDown", out: "fade" },
   }));
   const nameClips = order.map((e, i) => ({
-    asset: nameHtml(e.name),
+    asset: nameHtml(e.name, genre.nameColor),
     start: at(i),
     length: dur,
     position: "bottom",
@@ -173,7 +181,7 @@ export function buildReelEdit(entries: ReelEntry[], title = "ランキング") {
     transition: { in: "slideUp", out: "fade" },
   }));
   const bgClip = {
-    asset: { type: "image", src: `${ASSET_BASE}/bg.png` },
+    asset: { type: "image", src: `${genreBase}/bg.png` },
     start: 0,
     length: total,
     fit: "cover",

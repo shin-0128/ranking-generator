@@ -14,6 +14,7 @@ function loadImg(src: string): Promise<HTMLImageElement> {
 
 export async function makeCircularAvatar(
   srcDataUrl: string,
+  ringStops: [string, string, string] = ["#FFF1B8", "#FFD24D", "#C8860B"],
   size = 800,
 ): Promise<Blob> {
   const img = await loadImg(srcDataUrl);
@@ -45,11 +46,11 @@ export async function makeCircularAvatar(
   ctx.drawImage(img, cx - dw / 2, cy - dh / 2, dw, dh);
   ctx.restore();
 
-  // gold ring
+  // ring (genre-coloured gradient)
   const grad = ctx.createLinearGradient(0, cy - r, 0, cy + r);
-  grad.addColorStop(0, "#FFF1B8");
-  grad.addColorStop(0.5, "#FFD24D");
-  grad.addColorStop(1, "#C8860B");
+  grad.addColorStop(0, ringStops[0]);
+  grad.addColorStop(0.5, ringStops[1]);
+  grad.addColorStop(1, ringStops[2]);
   ctx.lineWidth = ringW;
   ctx.strokeStyle = grad;
   ctx.beginPath();
