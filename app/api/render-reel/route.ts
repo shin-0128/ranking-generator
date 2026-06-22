@@ -6,7 +6,13 @@ export const maxDuration = 30;
 
 // POST: submit a render. Body: { entries, title?, genre? } → { id }
 export async function POST(req: Request) {
-  let body: { entries?: ReelEntry[]; title?: string; genre?: string; effect?: string };
+  let body: {
+    entries?: ReelEntry[];
+    title?: string;
+    genre?: string;
+    effect?: string;
+    sound?: boolean;
+  };
   try {
     body = await req.json();
   } catch {
@@ -19,7 +25,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "no entries with avatars" }, { status: 400 });
   }
   try {
-    const edit = buildReelEdit(entries, body.title || "ランキング", body.genre, body.effect);
+    const edit = buildReelEdit(
+      entries,
+      body.title || "ランキング",
+      body.genre,
+      body.effect,
+      body.sound ?? false,
+    );
     const id = await submitRender(edit);
     return NextResponse.json({ id });
   } catch (e) {

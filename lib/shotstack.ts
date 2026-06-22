@@ -142,6 +142,9 @@ export function buildReelEdit(
   title = "ランキング",
   genreId?: string,
   effectId?: string,
+  // off by default: most livers add their own trending TikTok sound on top, so
+  // we ship a clean (silent) canvas unless a self-contained version is wanted.
+  sound = false,
 ) {
   const genre = getGenre(genreId);
   const effect = getEffect(effectId);
@@ -239,15 +242,17 @@ export function buildReelEdit(
     length,
   });
   const audioClips: object[] = [];
-  order.forEach((e, i) => {
-    audioClips.push(audio("whoosh.mp3", starts[i] - 0.08, 0.45, 0.55));
-    if (e.rank === 1) {
-      audioClips.push(audio("riser.mp3", starts[i] - 1.05, 1.2, 0.5));
-      audioClips.push(audio("boom1.mp3", starts[i] + 0.1, 1.0, 0.85));
-    } else {
-      audioClips.push(audio("impact.mp3", starts[i] + 0.1, 0.5, 0.7));
-    }
-  });
+  if (sound) {
+    order.forEach((e, i) => {
+      audioClips.push(audio("whoosh.mp3", starts[i] - 0.08, 0.45, 0.55));
+      if (e.rank === 1) {
+        audioClips.push(audio("riser.mp3", starts[i] - 1.05, 1.2, 0.5));
+        audioClips.push(audio("boom1.mp3", starts[i] + 0.1, 1.0, 0.85));
+      } else {
+        audioClips.push(audio("impact.mp3", starts[i] + 0.1, 0.5, 0.7));
+      }
+    });
+  }
 
   // Cinematic Veo-generated video background per genre — this is the real motion
   // in the frame while the avatar holds still (replaces the old procedural

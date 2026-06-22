@@ -21,6 +21,7 @@ export function RankingReelExport({ entries, rankCount, title }: Props) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [genreId, setGenreId] = useState(REEL_GENRES[0].id);
   const [effectId, setEffectId] = useState(REEL_EFFECTS[0].id);
+  const [sound, setSound] = useState(false);
   const genre = getGenre(genreId);
 
   const shown = entries
@@ -64,7 +65,13 @@ export function RankingReelExport({ entries, rankCount, title }: Props) {
       const sub = await fetch("/api/render-reel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entries: reelEntries, title, genre: genreId, effect: effectId }),
+        body: JSON.stringify({
+          entries: reelEntries,
+          title,
+          genre: genreId,
+          effect: effectId,
+          sound,
+        }),
       });
       if (!sub.ok) {
         const j = await sub.json().catch(() => ({}));
@@ -130,6 +137,19 @@ export function RankingReelExport({ entries, rankCount, title }: Props) {
           </button>
         ))}
       </div>
+      <label className="flex items-center gap-2 text-xs text-zinc-400 select-none">
+        <input
+          type="checkbox"
+          checked={sound}
+          onChange={(e) => setSound(e.target.checked)}
+          disabled={busy}
+          className="accent-amber-400"
+        />
+        効果音をつける
+        <span className="text-zinc-500">
+          （通常はOFF。TikTokでトレンド音源を乗せる人向け）
+        </span>
+      </label>
       <div className="flex flex-wrap items-center gap-3">
         <button
           onClick={generate}
