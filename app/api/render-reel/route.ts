@@ -12,6 +12,7 @@ export async function POST(req: Request) {
     genre?: string;
     effect?: string;
     sound?: boolean;
+    font?: string;
   };
   try {
     body = await req.json();
@@ -31,6 +32,7 @@ export async function POST(req: Request) {
       body.genre,
       body.effect,
       body.sound ?? false,
+      body.font,
     );
     const id = await submitRender(edit);
     return NextResponse.json({ id });

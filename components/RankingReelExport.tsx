@@ -4,6 +4,7 @@ import type { ExtractedEntry } from "@/lib/extractor/types";
 import { makeCircularAvatar } from "@/lib/circleAvatar";
 import { REEL_GENRES, getGenre } from "@/lib/reelGenres";
 import { REEL_EFFECTS } from "@/lib/reelEffects";
+import { REEL_FONTS } from "@/lib/reelFonts";
 
 interface Props {
   entries: ExtractedEntry[];
@@ -22,6 +23,7 @@ export function RankingReelExport({ entries, rankCount, title }: Props) {
   const [genreId, setGenreId] = useState(REEL_GENRES[0].id);
   const [effectId, setEffectId] = useState(REEL_EFFECTS[0].id);
   const [sound, setSound] = useState(false);
+  const [fontId, setFontId] = useState(REEL_FONTS[0].id);
   const genre = getGenre(genreId);
 
   const shown = entries
@@ -71,6 +73,7 @@ export function RankingReelExport({ entries, rankCount, title }: Props) {
           genre: genreId,
           effect: effectId,
           sound,
+          font: fontId,
         }),
       });
       if (!sub.ok) {
@@ -134,6 +137,23 @@ export function RankingReelExport({ entries, rankCount, title }: Props) {
             }`}
           >
             {ef.name}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-zinc-400">フォント:</span>
+        {REEL_FONTS.map((f) => (
+          <button
+            key={f.id}
+            onClick={() => setFontId(f.id)}
+            disabled={busy}
+            className={`text-xs px-3 py-1 rounded-full border transition-colors disabled:opacity-50 ${
+              f.id === fontId
+                ? "border-amber-400 bg-amber-400 text-zinc-900 font-semibold"
+                : "border-zinc-700 text-zinc-300 hover:border-amber-500"
+            }`}
+          >
+            {f.name}
           </button>
         ))}
       </div>

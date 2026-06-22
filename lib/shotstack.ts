@@ -11,6 +11,7 @@
  */
 import { getGenre } from "./reelGenres";
 import { getEffect } from "./reelEffects";
+import { getFont } from "./reelFonts";
 
 const ENV = "stage"; // sandbox; switch to "v1" on a paid plan (drops watermark)
 const HOST = `https://api.shotstack.io/edit/${ENV}`;
@@ -73,21 +74,21 @@ const medal = (r: number) => (r === 1 ? "🥇" : r === 2 ? "🥈" : r === 3 ? "�
 
 // HTML assets authored at the 1080-wide output res so text stays crisp
 // (a smaller asset gets upscaled by Shotstack and looks soft).
-function rankHtml(rank: number, color: string) {
+function rankHtml(rank: number, color: string, fam: string) {
   const m = medal(rank);
   return {
     type: "html" as const,
     html: `<p class="r">${m ? m + " " : ""}第 ${rank} 位</p>`,
-    css: `.r{font-family:'Noto Sans JP',sans-serif;font-size:144px;font-weight:700;color:${color};text-align:center;text-shadow:0 6px 24px rgba(0,0,0,.6);margin:0}`,
+    css: `.r{font-family:'${fam}',sans-serif;font-size:144px;font-weight:700;color:${color};text-align:center;text-shadow:0 6px 24px rgba(0,0,0,.6);margin:0}`,
     width: 1080,
     height: 300,
   };
 }
-function nameHtml(name: string, color: string) {
+function nameHtml(name: string, color: string, fam: string) {
   return {
     type: "html" as const,
     html: `<p class="n">${escapeHtml(name)}</p>`,
-    css: `.n{font-family:'Noto Sans JP',sans-serif;font-size:112px;font-weight:700;color:${color};text-align:center;text-shadow:0 6px 24px rgba(0,0,0,.7);margin:0}`,
+    css: `.n{font-family:'${fam}',sans-serif;font-size:112px;font-weight:700;color:${color};text-align:center;text-shadow:0 6px 24px rgba(0,0,0,.7);margin:0}`,
     width: 1080,
     height: 240,
   };
@@ -102,15 +103,15 @@ function escapeHtml(s: string) {
 // seconds, so we don't just title-card — we pose a suspense question ("who's
 // #1?") and tell the viewer to stay, over the already-moving background. The
 // countdown then pays the question off at the end.
-function hookHtml(title: string, color: string) {
+function hookHtml(title: string, color: string, fam: string) {
   return {
     type: "html" as const,
     html: `<div class="h"><p class="ey">${escapeHtml(title)}</p><p class="q">第 1 位 は…？</p><p class="cta">最後まで観てね</p></div>`,
     css:
       `.h{display:flex;flex-direction:column;align-items:center;gap:28px}` +
-      `.ey{font-family:'Noto Sans JP',sans-serif;font-size:82px;font-weight:700;color:#fff;letter-spacing:.06em;text-shadow:0 4px 18px rgba(0,0,0,.75);margin:0}` +
-      `.q{font-family:'Noto Sans JP',sans-serif;font-size:152px;font-weight:700;color:${color};text-shadow:0 8px 32px rgba(0,0,0,.7);margin:0}` +
-      `.cta{font-family:'Noto Sans JP',sans-serif;font-size:62px;font-weight:700;color:#fff;letter-spacing:.12em;text-shadow:0 4px 18px rgba(0,0,0,.85);margin:0}`,
+      `.ey{font-family:'${fam}',sans-serif;font-size:82px;font-weight:700;color:#fff;letter-spacing:.06em;text-shadow:0 4px 18px rgba(0,0,0,.75);margin:0}` +
+      `.q{font-family:'${fam}',sans-serif;font-size:152px;font-weight:700;color:${color};text-shadow:0 8px 32px rgba(0,0,0,.7);margin:0}` +
+      `.cta{font-family:'${fam}',sans-serif;font-size:62px;font-weight:700;color:#fff;letter-spacing:.12em;text-shadow:0 4px 18px rgba(0,0,0,.85);margin:0}`,
     width: 1080,
     height: 660,
   };
@@ -118,14 +119,14 @@ function hookHtml(title: string, color: string) {
 
 // Closing CTA — mirrors the hook ("#1 is…?" → "what's YOUR rank?") so the end
 // rhymes with the start (semantic loop: invites a replay) and drives comments.
-function ctaHtml(color: string) {
+function ctaHtml(color: string, fam: string) {
   return {
     type: "html" as const,
     html: `<div class="h"><p class="q">あなたは何位？</p><p class="cta">コメントで教えてね</p></div>`,
     css:
       `.h{display:flex;flex-direction:column;align-items:center;gap:28px}` +
-      `.q{font-family:'Noto Sans JP',sans-serif;font-size:140px;font-weight:700;color:${color};text-shadow:0 8px 32px rgba(0,0,0,.7);margin:0}` +
-      `.cta{font-family:'Noto Sans JP',sans-serif;font-size:64px;font-weight:700;color:#fff;letter-spacing:.12em;text-shadow:0 4px 18px rgba(0,0,0,.85);margin:0}`,
+      `.q{font-family:'${fam}',sans-serif;font-size:140px;font-weight:700;color:${color};text-shadow:0 8px 32px rgba(0,0,0,.7);margin:0}` +
+      `.cta{font-family:'${fam}',sans-serif;font-size:64px;font-weight:700;color:#fff;letter-spacing:.12em;text-shadow:0 4px 18px rgba(0,0,0,.85);margin:0}`,
     width: 1080,
     height: 520,
   };
@@ -145,9 +146,12 @@ export function buildReelEdit(
   // off by default: most livers add their own trending TikTok sound on top, so
   // we ship a clean (silent) canvas unless a self-contained version is wanted.
   sound = false,
+  fontId?: string,
 ) {
   const genre = getGenre(genreId);
   const effect = getEffect(effectId);
+  const font = getFont(fontId);
+  const fam = font.family;
   const genreBase = `${ASSET_BASE}/genres/${genre.id}`;
   const order = [...entries].sort((a, b) => b.rank - a.rank); // reveal high→low
   const intro = 2.4; // a touch longer so the hook reads, still snappy
@@ -165,7 +169,7 @@ export function buildReelEdit(
   const total = contentEnd + outro;
 
   const titleClip = {
-    asset: hookHtml(title, genre.rankColor),
+    asset: hookHtml(title, genre.rankColor, fam),
     start: 0,
     length: intro,
     transition: { in: "zoom", out: "fade" },
@@ -173,7 +177,7 @@ export function buildReelEdit(
     offset: { y: [{ from: -0.04, to: 0.03, start: 0, length: intro, ...ease("easeOutSine") }] },
   };
   const ctaClip = {
-    asset: ctaHtml(genre.rankColor),
+    asset: ctaHtml(genre.rankColor, fam),
     start: contentEnd,
     length: outro,
     transition: { in: "zoom", out: "fade" },
@@ -217,7 +221,7 @@ export function buildReelEdit(
       }))
     : [];
   const rankClips = order.map((e, i) => ({
-    asset: rankHtml(e.rank, genre.rankColor),
+    asset: rankHtml(e.rank, genre.rankColor, fam),
     start: starts[i],
     length: durOf(e.rank),
     position: "top",
@@ -225,7 +229,7 @@ export function buildReelEdit(
     transition: { in: "slideDown", out: "fade" },
   }));
   const nameClips = order.map((e, i) => ({
-    asset: nameHtml(e.name, genre.nameColor),
+    asset: nameHtml(e.name, genre.nameColor, fam),
     start: starts[i],
     length: durOf(e.rank),
     position: "bottom",
@@ -272,7 +276,7 @@ export function buildReelEdit(
 
   return {
     timeline: {
-      fonts: [{ src: `${ASSET_BASE}/NotoSansJP-Bold.otf` }],
+      fonts: [{ src: `${ASSET_BASE}/${font.file}` }],
       background: "#08080e",
       // drop empty tracks — Shotstack rejects a track with zero clips (e.g. when
       // the chosen effect has no speed-lines).
