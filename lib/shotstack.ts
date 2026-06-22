@@ -213,7 +213,7 @@ export function buildReelEdit(
   // Particles drift continuously up the whole video — the visible "moving
   // background" that keeps the frame alive while the avatar stays still.
   const particlesClip = {
-    asset: { type: "image", src: `${ASSET_BASE}/particles.png` },
+    asset: { type: "image", src: `${genreBase}/particles.png` },
     start: 0,
     length: total,
     fit: "none",
