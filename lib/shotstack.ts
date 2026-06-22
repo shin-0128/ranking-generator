@@ -229,6 +229,26 @@ export function buildReelEdit(
     offset: { y: 0.16 },
     transition: { in: "slideUp", out: "fade" },
   }));
+  // CC0 sound design (self-synthesized, no licensing): a whoosh as each avatar
+  // flies in, an impact thud on landing, and for #1 a tension riser into a big
+  // stab. Baked low so a liver's own trending TikTok sound still sits on top.
+  const SFX = `${ASSET_BASE}/sfx`;
+  const audio = (src: string, start: number, length: number, volume: number) => ({
+    asset: { type: "audio", src: `${SFX}/${src}`, volume },
+    start: Math.max(0, start),
+    length,
+  });
+  const audioClips: object[] = [];
+  order.forEach((e, i) => {
+    audioClips.push(audio("whoosh.mp3", starts[i] - 0.08, 0.45, 0.55));
+    if (e.rank === 1) {
+      audioClips.push(audio("riser.mp3", starts[i] - 1.05, 1.2, 0.5));
+      audioClips.push(audio("boom1.mp3", starts[i] + 0.1, 1.0, 0.85));
+    } else {
+      audioClips.push(audio("impact.mp3", starts[i] + 0.1, 0.5, 0.7));
+    }
+  });
+
   // Cinematic Veo-generated video background per genre — this is the real motion
   // in the frame while the avatar holds still (replaces the old procedural
   // particle/pan layers). Shotstack has no loop flag, so the ~8s clip is tiled
@@ -259,6 +279,7 @@ export function buildReelEdit(
         { clips: avatarClips },
         { clips: speedlineClips },
         { clips: bgClips },
+        { clips: audioClips },
       ].filter((tr) => tr.clips.length > 0),
     },
     output: { format: "mp4", aspectRatio: "9:16", resolution: "1080", fps: 30 },
