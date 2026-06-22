@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { ExtractedEntry } from "@/lib/extractor/types";
 import { makeCircularAvatar } from "@/lib/circleAvatar";
 import { REEL_GENRES, getGenre } from "@/lib/reelGenres";
+import { REEL_EFFECTS } from "@/lib/reelEffects";
 
 interface Props {
   entries: ExtractedEntry[];
@@ -19,6 +20,7 @@ export function RankingReelExport({ entries, rankCount, title }: Props) {
   const [msg, setMsg] = useState("");
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [genreId, setGenreId] = useState(REEL_GENRES[0].id);
+  const [effectId, setEffectId] = useState(REEL_EFFECTS[0].id);
   const genre = getGenre(genreId);
 
   const shown = entries
@@ -62,7 +64,7 @@ export function RankingReelExport({ entries, rankCount, title }: Props) {
       const sub = await fetch("/api/render-reel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entries: reelEntries, title, genre: genreId }),
+        body: JSON.stringify({ entries: reelEntries, title, genre: genreId, effect: effectId }),
       });
       if (!sub.ok) {
         const j = await sub.json().catch(() => ({}));
@@ -108,6 +110,23 @@ export function RankingReelExport({ entries, rankCount, title }: Props) {
             }`}
           >
             {g.name}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-zinc-400">演出:</span>
+        {REEL_EFFECTS.map((ef) => (
+          <button
+            key={ef.id}
+            onClick={() => setEffectId(ef.id)}
+            disabled={busy}
+            className={`text-xs px-3 py-1 rounded-full border transition-colors disabled:opacity-50 ${
+              ef.id === effectId
+                ? "border-amber-400 bg-amber-400 text-zinc-900 font-semibold"
+                : "border-zinc-700 text-zinc-300 hover:border-amber-500"
+            }`}
+          >
+            {ef.name}
           </button>
         ))}
       </div>

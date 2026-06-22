@@ -10,6 +10,7 @@
  * font (timeline.fonts) — Shotstack's HTML fallback renders tofu without it.
  */
 import { getGenre } from "./reelGenres";
+import { getEffect } from "./reelEffects";
 
 const ENV = "stage"; // sandbox; switch to "v1" on a paid plan (drops watermark)
 const HOST = `https://api.shotstack.io/edit/${ENV}`;
@@ -115,6 +116,21 @@ function hookHtml(title: string, color: string) {
   };
 }
 
+// Closing CTA — mirrors the hook ("#1 is…?" → "what's YOUR rank?") so the end
+// rhymes with the start (semantic loop: invites a replay) and drives comments.
+function ctaHtml(color: string) {
+  return {
+    type: "html" as const,
+    html: `<div class="h"><p class="q">あなたは何位？</p><p class="cta">コメントで教えてね</p></div>`,
+    css:
+      `.h{display:flex;flex-direction:column;align-items:center;gap:28px}` +
+      `.q{font-family:'Noto Sans JP',sans-serif;font-size:140px;font-weight:700;color:${color};text-shadow:0 8px 32px rgba(0,0,0,.7);margin:0}` +
+      `.cta{font-family:'Noto Sans JP',sans-serif;font-size:64px;font-weight:700;color:#fff;letter-spacing:.12em;text-shadow:0 4px 18px rgba(0,0,0,.85);margin:0}`,
+    width: 1080,
+    height: 520,
+  };
+}
+
 // Fighting-game-style impact. Shotstack stage doesn't animate scale, but offset
 // + opacity keyframes do: the avatar slams in from alternating sides with an
 // easeOutBack overshoot, under a white impact flash and a radial speed-line
@@ -125,8 +141,10 @@ export function buildReelEdit(
   entries: ReelEntry[],
   title = "ランキング",
   genreId?: string,
+  effectId?: string,
 ) {
   const genre = getGenre(genreId);
+  const effect = getEffect(effectId);
   const genreBase = `${ASSET_BASE}/genres/${genre.id}`;
   const order = [...entries].sort((a, b) => b.rank - a.rank); // reveal high→low
   const intro = 2.4; // a touch longer so the hook reads, still snappy
@@ -139,7 +157,9 @@ export function buildReelEdit(
     starts.push(t);
     t += durOf(e.rank);
   }
-  const total = t;
+  const contentEnd = t;
+  const outro = 1.2; // closing CTA — turns the end into a loop/comment prompt
+  const total = contentEnd + outro;
 
   const titleClip = {
     asset: hookHtml(title, genre.rankColor),
@@ -149,43 +169,50 @@ export function buildReelEdit(
     // slow downward drift so the hook is never a static hold
     offset: { y: [{ from: -0.04, to: 0.03, start: 0, length: intro, ...ease("easeOutSine") }] },
   };
-  // Avatar slams in then holds STILL (the subject stays stable). The "always
-  // moving" energy comes from the background layers, not the icon.
-  const avatarClips = order.map((e, i) => {
-    const side = i % 2 === 0 ? 0.6 : -0.6;
-    return {
-      asset: { type: "image", src: e.url },
+  const ctaClip = {
+    asset: ctaHtml(genre.rankColor),
+    start: contentEnd,
+    length: outro,
+    transition: { in: "zoom", out: "fade" },
+    offset: { y: [{ from: 0.03, to: -0.03, start: 0, length: outro, ...ease("easeInOutSine") }] },
+  };
+  // Avatar enters per the chosen effect, then holds STILL (the subject stays
+  // stable). The "always moving" energy comes from the background, not the icon.
+  const avatarClips = order.map((e, i) => ({
+    asset: { type: "image", src: e.url },
+    start: starts[i],
+    length: durOf(e.rank),
+    fit: "none",
+    scale: 0.78,
+    ...effect.avatarAnim(i),
+  }));
+  const flashClips = order.flatMap((e, i) => {
+    const peak = effect.flashPeak(e.rank);
+    if (peak <= 0) return [];
+    return [{
+      asset: { type: "image", src: `${ASSET_BASE}/flash.png` },
       start: starts[i],
-      length: durOf(e.rank),
+      length: 0.3,
       fit: "none",
-      scale: 0.78,
-      offset: {
-        x: [{ from: side, to: 0, start: 0, length: 0.42, ...ease("easeOutBack") }],
-        y: -0.02,
-      },
-    };
+      scale: e.rank === 1 ? 1.8 : 1.4,
+      offset: { y: -0.02 },
+      opacity: [{ from: peak, to: 0, start: 0, length: 0.26, ...ease("easeOutQuad") }],
+    }];
   });
-  const flashClips = order.map((e, i) => ({
-    asset: { type: "image", src: `${ASSET_BASE}/flash.png` },
-    start: starts[i],
-    length: 0.3,
-    fit: "none",
-    scale: e.rank === 1 ? 1.8 : 1.4,
-    offset: { y: -0.02 },
-    opacity: [{ from: e.rank === 1 ? 1 : 0.85, to: 0, start: 0, length: 0.26, ...ease("easeOutQuad") }],
-  }));
-  const speedlineClips = order.map((e, i) => ({
-    asset: { type: "image", src: `${genreBase}/speedlines.png` },
-    start: starts[i],
-    length: 0.55,
-    fit: "none",
-    // grow the burst outward via offset so it reads as expanding energy
-    scale: 1.05,
-    offset: {
-      y: [{ from: 0.02, to: -0.02, start: 0, length: 0.5, ...ease("easeOutQuad") }],
-    },
-    opacity: [{ from: 0.85, to: 0, start: 0, length: 0.42, ...ease("easeOutQuad") }],
-  }));
+  const speedlineClips = effect.speedlines
+    ? order.map((e, i) => ({
+        asset: { type: "image", src: `${genreBase}/speedlines.png` },
+        start: starts[i],
+        length: 0.55,
+        fit: "none",
+        // grow the burst outward via offset so it reads as expanding energy
+        scale: 1.05,
+        offset: {
+          y: [{ from: 0.02, to: -0.02, start: 0, length: 0.5, ...ease("easeOutQuad") }],
+        },
+        opacity: [{ from: 0.85, to: 0, start: 0, length: 0.42, ...ease("easeOutQuad") }],
+      }))
+    : [];
   const rankClips = order.map((e, i) => ({
     asset: rankHtml(e.rank, genre.rankColor),
     start: starts[i],
@@ -222,15 +249,17 @@ export function buildReelEdit(
     timeline: {
       fonts: [{ src: `${ASSET_BASE}/NotoSansJP-Bold.otf` }],
       background: "#08080e",
+      // drop empty tracks — Shotstack rejects a track with zero clips (e.g. when
+      // the chosen effect has no speed-lines).
       tracks: [
-        { clips: [titleClip] },
+        { clips: [titleClip, ctaClip] },
         { clips: flashClips },
         { clips: rankClips },
         { clips: nameClips },
         { clips: avatarClips },
         { clips: speedlineClips },
         { clips: bgClips },
-      ],
+      ].filter((tr) => tr.clips.length > 0),
     },
     output: { format: "mp4", aspectRatio: "9:16", resolution: "1080", fps: 30 },
   };
