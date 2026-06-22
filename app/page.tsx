@@ -4,6 +4,7 @@ import { ImageUploader } from "@/components/ImageUploader";
 import { EntryEditor } from "@/components/EntryEditor";
 import { RankSelector } from "@/components/RankSelector";
 import { RankingPages } from "@/components/RankingPages";
+import { RankingReelExport } from "@/components/RankingReelExport";
 import { ScreenshotIconPicker } from "@/components/ScreenshotIconPicker";
 import type { ExtractedEntry } from "@/lib/extractor/types";
 import type { ThemeConfig } from "@/lib/composer";
@@ -292,6 +293,18 @@ export default function Home() {
             />
           )}
         </section>
+
+        {entries.length > 0 && (
+          <section className="rounded-lg border border-amber-900/40 bg-amber-950/10 p-4">
+            <h2 className="font-semibold mb-1">
+              動画リール <span className="text-amber-400 text-sm">β（全画面カウントダウン）</span>
+            </h2>
+            <p className="text-xs text-zinc-400 mb-3">
+              上位を 1人ずつ全画面でドラマチックに発表（9:16・MP4）。本物のアイコンが動くのが差別化ポイント。
+            </p>
+            <RankingReelExport entries={entries} rankCount={rankCount} title={title} />
+          </section>
+        )}
       </div>
     </main>
   );
