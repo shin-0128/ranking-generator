@@ -97,13 +97,21 @@ function escapeHtml(s: string) {
   );
 }
 
-function titleHtml(title: string, color: string) {
+// Opening hook (first ~2.5s). TikTok retention lives or dies in the first 3
+// seconds, so we don't just title-card — we pose a suspense question ("who's
+// #1?") and tell the viewer to stay, over the already-moving background. The
+// countdown then pays the question off at the end.
+function hookHtml(title: string, color: string) {
   return {
     type: "html" as const,
-    html: `<div class="t"><p class="big">${escapeHtml(title)}</p><p class="sub">発 表</p></div>`,
-    css: `.t{display:flex;flex-direction:column;align-items:center;gap:24px}.big{font-family:'Noto Sans JP',sans-serif;font-size:156px;font-weight:700;color:${color};text-shadow:0 8px 32px rgba(0,0,0,.6);margin:0}.sub{font-family:'Noto Sans JP',sans-serif;font-size:72px;font-weight:700;color:#fff;letter-spacing:.3em;margin:0}`,
+    html: `<div class="h"><p class="ey">${escapeHtml(title)}</p><p class="q">第 1 位 は…？</p><p class="cta">最後まで観てね</p></div>`,
+    css:
+      `.h{display:flex;flex-direction:column;align-items:center;gap:28px}` +
+      `.ey{font-family:'Noto Sans JP',sans-serif;font-size:82px;font-weight:700;color:#fff;letter-spacing:.06em;text-shadow:0 4px 18px rgba(0,0,0,.75);margin:0}` +
+      `.q{font-family:'Noto Sans JP',sans-serif;font-size:152px;font-weight:700;color:${color};text-shadow:0 8px 32px rgba(0,0,0,.7);margin:0}` +
+      `.cta{font-family:'Noto Sans JP',sans-serif;font-size:62px;font-weight:700;color:#fff;letter-spacing:.12em;text-shadow:0 4px 18px rgba(0,0,0,.85);margin:0}`,
     width: 1080,
-    height: 540,
+    height: 660,
   };
 }
 
@@ -121,7 +129,7 @@ export function buildReelEdit(
   const genre = getGenre(genreId);
   const genreBase = `${ASSET_BASE}/genres/${genre.id}`;
   const order = [...entries].sort((a, b) => b.rank - a.rank); // reveal high→low
-  const intro = 1.6;
+  const intro = 2.4; // a touch longer so the hook reads, still snappy
   // Faster low ranks, big climactic hold on #1 (the payoff). TikTok rewards
   // constant change + a strong finish, not even pacing.
   const durOf = (rank: number) => (rank === 1 ? 3.4 : rank <= 3 ? 2.4 : 1.8);
@@ -134,10 +142,12 @@ export function buildReelEdit(
   const total = t;
 
   const titleClip = {
-    asset: titleHtml(title, genre.rankColor),
+    asset: hookHtml(title, genre.rankColor),
     start: 0,
     length: intro,
     transition: { in: "zoom", out: "fade" },
+    // slow downward drift so the hook is never a static hold
+    offset: { y: [{ from: -0.04, to: 0.03, start: 0, length: intro, ...ease("easeOutSine") }] },
   };
   // Avatar slams in then holds STILL (the subject stays stable). The "always
   // moving" energy comes from the background layers, not the icon.
