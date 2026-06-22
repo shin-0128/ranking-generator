@@ -192,37 +192,21 @@ export function buildReelEdit(
     offset: { y: 0.16 },
     transition: { in: "slideUp", out: "fade" },
   }));
-  // Oversized + slow pan so the background never sits still (no edges shown).
-  const bgClip = {
-    asset: { type: "image", src: `${genreBase}/bg.png` },
-    start: 0,
-    length: total,
-    fit: "cover",
-    scale: 1.15,
-    offset: {
-      x: [
-        { from: -0.04, to: 0.04, start: 0, length: total / 2, ...ease("easeInOutSine") },
-        { from: 0.04, to: -0.04, start: total / 2, length: total / 2, ...ease("easeInOutSine") },
-      ],
-      y: [
-        { from: 0.03, to: -0.03, start: 0, length: total / 2, ...ease("easeInOutSine") },
-        { from: -0.03, to: 0.03, start: total / 2, length: total / 2, ...ease("easeInOutSine") },
-      ],
-    },
-  };
-  // Particles drift continuously up the whole video — the visible "moving
-  // background" that keeps the frame alive while the avatar stays still.
-  const particlesClip = {
-    asset: { type: "image", src: `${genreBase}/particles.png` },
-    start: 0,
-    length: total,
-    fit: "none",
-    scale: 1,
-    opacity: [{ from: 0.7, to: 0.7, start: 0, length: total }],
-    offset: {
-      y: [{ from: 0.2, to: -0.2, start: 0, length: total, ...ease("easeInOutSine") }],
-    },
-  };
+  // Cinematic Veo-generated video background per genre — this is the real motion
+  // in the frame while the avatar holds still (replaces the old procedural
+  // particle/pan layers). Shotstack has no loop flag, so the ~8s clip is tiled
+  // back-to-back across the whole timeline. scale 1.1 hides any edge wobble.
+  const BG_SRC = 8;
+  const bgClips: object[] = [];
+  for (let s = 0; s < total; s += BG_SRC) {
+    bgClips.push({
+      asset: { type: "video", src: `${genreBase}/bg.mp4`, volume: 0 },
+      start: s,
+      length: Math.min(BG_SRC, total - s),
+      fit: "cover",
+      scale: 1.1,
+    });
+  }
 
   return {
     timeline: {
@@ -235,8 +219,7 @@ export function buildReelEdit(
         { clips: nameClips },
         { clips: avatarClips },
         { clips: speedlineClips },
-        { clips: [particlesClip] },
-        { clips: [bgClip] },
+        { clips: bgClips },
       ],
     },
     output: { format: "mp4", aspectRatio: "9:16", resolution: "1080", fps: 30 },
