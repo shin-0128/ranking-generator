@@ -122,9 +122,16 @@ export function buildReelEdit(
   const genreBase = `${ASSET_BASE}/genres/${genre.id}`;
   const order = [...entries].sort((a, b) => b.rank - a.rank); // reveal high→low
   const intro = 1.6;
-  const dur = 2.4;
-  const total = intro + order.length * dur;
-  const at = (i: number) => intro + i * dur;
+  // Faster low ranks, big climactic hold on #1 (the payoff). TikTok rewards
+  // constant change + a strong finish, not even pacing.
+  const durOf = (rank: number) => (rank === 1 ? 3.4 : rank <= 3 ? 2.4 : 1.8);
+  const starts: number[] = [];
+  let t = intro;
+  for (const e of order) {
+    starts.push(t);
+    t += durOf(e.rank);
+  }
+  const total = t;
 
   const titleClip = {
     asset: titleHtml(title, genre.rankColor),
@@ -132,59 +139,89 @@ export function buildReelEdit(
     length: intro,
     transition: { in: "zoom", out: "fade" },
   };
+  // Avatar slams in then holds STILL (the subject stays stable). The "always
+  // moving" energy comes from the background layers, not the icon.
   const avatarClips = order.map((e, i) => {
-    const side = i % 2 === 0 ? 0.6 : -0.6; // slam in from alternating sides
+    const side = i % 2 === 0 ? 0.6 : -0.6;
     return {
       asset: { type: "image", src: e.url },
-      start: at(i),
-      length: dur,
+      start: starts[i],
+      length: durOf(e.rank),
       fit: "none",
       scale: 0.78,
       offset: {
-        x: [{ from: side, to: 0, start: 0, length: 0.4, ...ease("easeOutBack") }],
-        y: [{ from: -0.02, to: -0.02, start: 0, length: 0.45 }],
+        x: [{ from: side, to: 0, start: 0, length: 0.42, ...ease("easeOutBack") }],
+        y: -0.02,
       },
     };
   });
   const flashClips = order.map((e, i) => ({
     asset: { type: "image", src: `${ASSET_BASE}/flash.png` },
-    start: at(i),
+    start: starts[i],
     length: 0.3,
     fit: "none",
-    scale: 1.4,
+    scale: e.rank === 1 ? 1.8 : 1.4,
     offset: { y: -0.02 },
-    opacity: [{ from: 0.85, to: 0, start: 0, length: 0.26, ...ease("easeOutQuad") }],
+    opacity: [{ from: e.rank === 1 ? 1 : 0.85, to: 0, start: 0, length: 0.26, ...ease("easeOutQuad") }],
   }));
   const speedlineClips = order.map((e, i) => ({
     asset: { type: "image", src: `${genreBase}/speedlines.png` },
-    start: at(i),
+    start: starts[i],
     length: 0.55,
     fit: "none",
+    // grow the burst outward via offset so it reads as expanding energy
     scale: 1.05,
-    offset: { y: -0.02 },
+    offset: {
+      y: [{ from: 0.02, to: -0.02, start: 0, length: 0.5, ...ease("easeOutQuad") }],
+    },
     opacity: [{ from: 0.85, to: 0, start: 0, length: 0.42, ...ease("easeOutQuad") }],
   }));
   const rankClips = order.map((e, i) => ({
     asset: rankHtml(e.rank, genre.rankColor),
-    start: at(i),
-    length: dur,
+    start: starts[i],
+    length: durOf(e.rank),
     position: "top",
     offset: { y: -0.14 },
     transition: { in: "slideDown", out: "fade" },
   }));
   const nameClips = order.map((e, i) => ({
     asset: nameHtml(e.name, genre.nameColor),
-    start: at(i),
-    length: dur,
+    start: starts[i],
+    length: durOf(e.rank),
     position: "bottom",
     offset: { y: 0.16 },
     transition: { in: "slideUp", out: "fade" },
   }));
+  // Oversized + slow pan so the background never sits still (no edges shown).
   const bgClip = {
     asset: { type: "image", src: `${genreBase}/bg.png` },
     start: 0,
     length: total,
     fit: "cover",
+    scale: 1.15,
+    offset: {
+      x: [
+        { from: -0.04, to: 0.04, start: 0, length: total / 2, ...ease("easeInOutSine") },
+        { from: 0.04, to: -0.04, start: total / 2, length: total / 2, ...ease("easeInOutSine") },
+      ],
+      y: [
+        { from: 0.03, to: -0.03, start: 0, length: total / 2, ...ease("easeInOutSine") },
+        { from: -0.03, to: 0.03, start: total / 2, length: total / 2, ...ease("easeInOutSine") },
+      ],
+    },
+  };
+  // Particles drift continuously up the whole video — the visible "moving
+  // background" that keeps the frame alive while the avatar stays still.
+  const particlesClip = {
+    asset: { type: "image", src: `${ASSET_BASE}/particles.png` },
+    start: 0,
+    length: total,
+    fit: "none",
+    scale: 1,
+    opacity: [{ from: 0.7, to: 0.7, start: 0, length: total }],
+    offset: {
+      y: [{ from: 0.2, to: -0.2, start: 0, length: total, ...ease("easeInOutSine") }],
+    },
   };
 
   return {
@@ -198,6 +235,7 @@ export function buildReelEdit(
         { clips: nameClips },
         { clips: avatarClips },
         { clips: speedlineClips },
+        { clips: [particlesClip] },
         { clips: [bgClip] },
       ],
     },
